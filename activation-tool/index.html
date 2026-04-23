@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>مولد تفعيل إدارة ذرعات المقاولين</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Spardex Lab</span>
+          <h1>مولد تفعيل إدارة ذرعات المقاولين</h1>
+          <p>أداة أوفلاين مستقلة لتوليد أكواد التفعيل حسب بصمة الجهاز ونوع الرخصة.</p>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel form-panel">
+          <div class="section-head">
+            <h2>بيانات التفعيل</h2>
+            <span>أدخل البيانات ثم اضغط توليد</span>
+          </div>
+
+          <div class="form-grid">
+            <label>
+              اسم العميل
+              <input id="customerName" placeholder="مثال: شركة الرافدين" />
+            </label>
+
+            <label>
+              رمز العميل
+              <input id="customerCode" placeholder="اختياري" />
+            </label>
+
+            <label class="span-2">
+              بصمة الجهاز
+              <input id="deviceFingerprint" placeholder="مثال: 34B95E437646FE2E" />
+            </label>
+
+            <label>
+              نوع الرخصة
+              <select id="plan">
+                <option value="demo">Demo</option>
+                <option value="monthly">Monthly</option>
+                <option value="yearly">Yearly</option>
+                <option value="lifetime">Lifetime</option>
+              </select>
+            </label>
+
+            <label>
+              تاريخ الانتهاء
+              <input id="expiresAt" type="date" />
+            </label>
+
+            <label class="span-2">
+              ملاحظات
+              <textarea id="notes" rows="4" placeholder="اختياري"></textarea>
+            </label>
+          </div>
+
+          <div class="actions">
+            <button id="generateButton" class="primary" type="button">توليد الكود</button>
+            <button id="clearButton" class="ghost" type="button">مسح الحقول</button>
+          </div>
+        </section>
+
+        <section class="panel result-panel">
+          <div class="section-head">
+            <h2>النتيجة</h2>
+            <span>ملخص الرخصة والكود النهائي</span>
+          </div>
+
+          <div id="message" class="message hidden"></div>
+
+          <div class="summary-grid">
+            <div class="summary-box">
+              <span>الخطة</span>
+              <strong id="summaryPlan">-</strong>
+            </div>
+            <div class="summary-box">
+              <span>العميل</span>
+              <strong id="summaryCustomer">-</strong>
+            </div>
+            <div class="summary-box">
+              <span>بصمة الجهاز</span>
+              <strong id="summaryDevice">-</strong>
+            </div>
+            <div class="summary-box highlight">
+              <span>الانتهاء</span>
+              <strong id="summaryExpires">-</strong>
+            </div>
+          </div>
+
+          <label class="key-field">
+            كود التفعيل
+            <textarea id="licenseKey" rows="8" readonly placeholder="سيظهر كود التفعيل هنا"></textarea>
+          </label>
+
+          <div class="actions">
+            <button id="copyButton" class="primary" type="button">نسخ الكود</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

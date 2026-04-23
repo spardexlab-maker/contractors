@@ -1,0 +1,30 @@
+{
+  "name": "contractor-activation-tool",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "description": "Offline activation key generator for the contractor measurements desktop app.",
+  "author": "Spardex Lab",
+  "build": {
+    "appId": "com.invoice.contractordesk.activationtool",
+    "productName": "مولد تفعيل إدارة ذرعات المقاولين",
+    "electronVersion": "35.7.5",
+    "files": [
+      "*.js",
+      "*.html",
+      "*.css",
+      "package.json"
+    ],
+    "directories": {
+      "output": "../dist-activation"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

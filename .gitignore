@@ -1,0 +1,37 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# builds and packaged output
+/build
+/dist
+/dist-activation
+/dist-final-v011
+/dist-v012
+/dist-v013
+/_pkginspect
+
+# logs
+*.log
+client.err.log
+client.log
+server.err.log
+server.log
+
+# environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# system
+.DS_Store
+Thumbs.db
+
+# package manager
+yarn.lock

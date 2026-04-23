@@ -1,0 +1,244 @@
+@import url("https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap");
+
+:root {
+  --bg: #eef4ff;
+  --panel: rgba(255, 255, 255, 0.96);
+  --panel-soft: #f7faff;
+  --line: #d7e3ff;
+  --text: #12264d;
+  --muted: #6d7ea7;
+  --accent: #007bff;
+  --accent-strong: #071b8c;
+  --success: #1f8b63;
+  --danger: #b84f4f;
+  --shadow: 0 20px 50px rgba(7, 27, 140, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: "Cairo", sans-serif;
+  background:
+    radial-gradient(circle at top right, rgba(0, 123, 255, 0.16), transparent 22%),
+    radial-gradient(circle at top left, rgba(7, 27, 140, 0.14), transparent 22%),
+    linear-gradient(180deg, #f7faff 0%, var(--bg) 100%);
+  color: var(--text);
+}
+
+body {
+  padding: 24px;
+}
+
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  gap: 20px;
+}
+
+.hero,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  padding: 28px 32px;
+}
+
+.eyebrow {
+  display: inline-block;
+  color: var(--accent);
+  font-weight: 800;
+  margin-bottom: 10px;
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+}
+
+.hero p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 20px;
+}
+
+.panel {
+  padding: 24px;
+  display: grid;
+  gap: 18px;
+}
+
+.section-head h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.section-head span {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+label {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--text);
+  border-radius: 18px;
+  padding: 14px 16px;
+  outline: none;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.12);
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+button {
+  border: 0;
+  border-radius: 18px;
+  padding: 14px 22px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.primary {
+  color: white;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+}
+
+.ghost {
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.summary-box {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  padding: 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.summary-box span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.summary-box strong {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.summary-box.highlight {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-strong) 100%);
+  color: white;
+}
+
+.summary-box.highlight span {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.key-field {
+  display: grid;
+  gap: 8px;
+}
+
+.key-field textarea {
+  min-height: 190px;
+  direction: ltr;
+  text-align: left;
+}
+
+.message {
+  border-radius: 18px;
+  padding: 14px 16px;
+  font-weight: 700;
+}
+
+.message.hidden {
+  display: none;
+}
+
+.message.success {
+  background: #e8f7f0;
+  color: var(--success);
+  border: 1px solid #bfe8d4;
+}
+
+.message.error {
+  background: #fff0f0;
+  color: var(--danger);
+  border: 1px solid #f0c9c9;
+}
+
+@media (max-width: 920px) {
+  .layout,
+  .form-grid,
+  .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: span 1;
+  }
+}

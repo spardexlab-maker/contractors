@@ -1,0 +1,2854 @@
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const FALLBACK_KEY = "contractor-desk-data-v2";
+const PROGRAM_LOGO_URL = `${process.env.PUBLIC_URL || ""}/assets/program-logo.png`;
+const SPARDEX_LOGO_URL = `${process.env.PUBLIC_URL || ""}/assets/spardex-logo.png`;
+const APP_NAME = "Ø¥Ø¯Ø§Ø±Ø© Ø°Ø±Ø¹Ø§Øª Ø§Ù„Ù…Ù‚Ø§ÙˆÙ„ÙŠÙ†";
+const DEFAULT_UNITS = ["Ù…", "Ù…2", "Ù…3", "Ø¹Ø¯Ø¯", "l.m", "Ù‚Ø·Ø¹ÙŠ"];
+
+const initialData = {
+  settings: {
+    companyName: "Ø§Ù„Ø´Ø±ÙƒØ© Ø§Ù„Ø¹Ø§Ù…Ø©",
+    projectName: "Ù…Ø´Ø±ÙˆØ¹ Ø¬Ø¯ÙŠØ¯",
+    projectSequence: "1",
+    projectCode: "PRJ-001",
+    logoPath: "",
+    databasePath: "",
+    filesPath: "C:\\ContractorDesk\\Files",
+    newCopiesPath: "C:\\ContractorDesk\\IssuedCopies",
+    showContractQuantityInMeasurement: false,
+    showRemainingQtyInMeasurement: true,
+    unitOptions: DEFAULT_UNITS,
+    previousDueMode: "auto",
+    superPassword: "12345",
+  },
+  contractors: [],
+  measurements: [],
+};
+
+function makeId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function money(value) {
+  return Number(value || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function parseNumericInput(value) {
+  const normalized = String(value ?? "")
+    .replace(/,/g, "")
+    .replace(/[^\d.-]/g, "");
+  if (!normalized || normalized === "-" || normalized === "." || normalized === "-.") {
+    return 0;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatEditableNumber(value, options = {}) {
+  const { blankZero = false } = options;
+  const numeric = Number(value || 0);
+  if (blankZero && numeric === 0) {
+    return "";
+  }
+  return numeric.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+}
+
+function blankIfZero(value) {
+  return Number(value || 0) === 0 ? "" : value;
+}
+
+function textareaRows(value, width = 34) {
+  const text = String(value || "");
+  const lines = text.split("\n").reduce((sum, line) => {
+    return sum + Math.max(1, Math.ceil((line.length || 1) / width));
+  }, 0);
+  return Math.min(Math.max(lines, 1), 6);
+}
+
+function dateInput(value) {
+  const date = value ? new Date(value) : new Date();
+  return date.toLocaleDateString("en-CA");
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function sanitizeSegment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 80) || "untitled";
+}
+
+function joinWindowsPath(...parts) {
+  return parts
+    .filter(Boolean)
+    .join("\\")
+    .replace(/\\\\+/g, "\\");
+}
+
+function fileExtension(filePath) {
+  const match = String(filePath || "").match(/(\.[a-zA-Z0-9]+)$/);
+  return match ? match[1] : "";
+}
+
+function normalizeUnitOptions(value) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(/\r?\n|,/)
+        .map((item) => item.trim());
+
+  const unique = Array.from(new Set(source.filter(Boolean)));
+  return unique.length ? unique : DEFAULT_UNITS;
+}
+
+function toFileUrl(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (/^(https?:|data:|blob:|file:)/i.test(value)) {
+    return value;
+  }
+  if (/^[a-zA-Z]:\\/.test(value)) {
+    return encodeURI(`file:///${value.replace(/\\/g, "/")}`);
+  }
+  if (value.startsWith("\\\\")) {
+    return encodeURI(`file:${value.replace(/\\/g, "/")}`);
+  }
+  return encodeURI(value);
+}
+
+function resolveAssetUrl(assetPath) {
+  const value = String(assetPath || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (/^(https?:|data:|blob:|file:)/i.test(value)) {
+    return value;
+  }
+  if (typeof window !== "undefined" && window.location) {
+    return new URL(value, `${window.location.origin}/`).href;
+  }
+  return value;
+}
+
+function withDemoData(source) {
+  const base = JSON.parse(JSON.stringify(source));
+  const demoContractorIds = new Set(
+    (base.contractors || []).filter((item) => String(item.id || "").includes("demo")).map((item) => item.id)
+  );
+
+  base.contractors = (base.contractors || []).filter(
+    (item) => !String(item.id || "").includes("demo")
+  );
+  base.measurements = (base.measurements || []).filter(
+    (item) =>
+      !String(item.id || "").includes("demo") && !demoContractorIds.has(item.contractorId)
+  );
+
+  return base;
+}
+
+function repairArabicText(value) {
+  if (typeof value !== "string") {
+    return value;
+  }
+  if (!/[Ã˜Ã™Ã›Ãƒ]/.test(value)) {
+    return value;
+  }
+  try {
+    return decodeURIComponent(escape(value));
+  } catch (_error) {
+    return value;
+  }
+}
+
+function normalizeStoredData(source) {
+  if (Array.isArray(source)) {
+    return source.map(normalizeStoredData);
+  }
+  if (source && typeof source === "object") {
+    return Object.fromEntries(
+      Object.entries(source).map(([key, value]) => [key, normalizeStoredData(value)])
+    );
+  }
+  return repairArabicText(source);
+}
+
+function normalizeStoredSettings(settings) {
+  const next = { ...settings };
+
+  ["companyName", "projectName"].forEach((key) => {
+    const value = String(next[key] || "").trim();
+    if (!value || /^[?\s]+$/.test(value) || /\uFFFD/.test(value)) {
+      next[key] = initialData.settings[key];
+    }
+  });
+
+  next.unitOptions = normalizeUnitOptions(next.unitOptions);
+  next.showContractQuantityInMeasurement = Boolean(next.showContractQuantityInMeasurement);
+  next.showRemainingQtyInMeasurement = Boolean(
+    next.showRemainingQtyInMeasurement ?? initialData.settings.showRemainingQtyInMeasurement
+  );
+
+  return next;
+}
+
+function normalizeContractor(contractor) {
+  return {
+    ...contractor,
+    useItemRetention: Boolean(contractor.useItemRetention),
+    showProgressPercent: Boolean(contractor.showProgressPercent),
+    contractAddendums: Array.isArray(contractor.contractAddendums)
+      ? contractor.contractAddendums.map((item, index) => ({
+          id: item.id || makeId(`addendum-${index + 1}`),
+          title: item.title || `Ù…Ù„Ø­Ù‚ Ø¹Ù‚Ø¯ ${index + 1}`,
+          path: item.path || "",
+        }))
+      : [],
+    items: Array.isArray(contractor.items)
+      ? contractor.items.map((item) => ({
+          ...item,
+          retentionPercent: Number(item.retentionPercent || 0),
+          progressPercent: Number(item.progressPercent || 0),
+        }))
+      : [],
+  };
+}
+
+async function loadStoredData() {
+  if (window.desktopApi?.loadData) {
+    const stored = normalizeStoredData(await window.desktopApi.loadData());
+    if (stored && stored.settings) {
+      return withDemoData({
+        ...stored,
+        contractors: (stored.contractors || []).map(normalizeContractor),
+        settings: normalizeStoredSettings({
+          ...initialData.settings,
+          ...stored.settings,
+          databasePath: stored.__meta?.databasePath || stored.settings.databasePath || "",
+        }),
+      });
+    }
+  }
+
+  try {
+    const raw = window.localStorage.getItem(FALLBACK_KEY);
+    const parsed = raw ? normalizeStoredData(JSON.parse(raw)) : null;
+    return parsed
+      ? withDemoData({
+          ...parsed,
+          contractors: (parsed.contractors || []).map(normalizeContractor),
+          settings: normalizeStoredSettings({
+            ...initialData.settings,
+            ...parsed.settings,
+          }),
+        })
+      : withDemoData(initialData);
+  } catch (error) {
+    return withDemoData(initialData);
+  }
+}
+
+async function persistData(data) {
+  if (window.desktopApi?.saveData) {
+    await window.desktopApi.saveData(data);
+  }
+  window.localStorage.setItem(FALLBACK_KEY, JSON.stringify(data));
+}
+
+function sumRows(rows) {
+  return rows.reduce((sum, row) => sum + Number(row || 0), 0);
+}
+
+function enrichRow(row) {
+  const previousQty = Number(row.previousQty || 0);
+  const currentQty = Number(row.currentQty || 0);
+  const unitPrice = Number(row.unitPrice || 0);
+  const contractQuantity = Number(row.contractQuantity || 0);
+  const totalQty = previousQty + currentQty;
+  const retentionPercent = Number(row.retentionPercent || 0);
+  const progressPercent = Number(row.progressPercent || 0);
+  const remainingQty =
+    contractQuantity > 0 ? Math.max(contractQuantity - totalQty, 0) : 0;
+
+  return {
+    ...row,
+    previousQty,
+    currentQty,
+    unitPrice,
+    contractQuantity,
+    retentionPercent,
+    progressPercent,
+    totalQty,
+    remainingQty,
+    previousAmount: previousQty * unitPrice,
+    currentAmount: currentQty * unitPrice,
+    totalAmount: totalQty * unitPrice,
+  };
+}
+
+function measurementSummary(measurement, contractor, previousPayable, settings) {
+  const rows = measurement.rows.map(enrichRow);
+  const totalDue = sumRows(rows.map((row) => row.totalAmount));
+  const currentAmount = sumRows(rows.map((row) => row.currentAmount));
+  const previousDue =
+    settings.previousDueMode === "manual"
+      ? Number(measurement.previousDueManual || 0)
+      : Number(previousPayable || 0);
+  const retentionAmount =
+    measurement.type === "clearance"
+      ? 0
+      : contractor.useItemRetention
+        ? sumRows(
+            rows.map((row) => row.totalAmount * (Number(row.retentionPercent || 0) / 100))
+          )
+        : totalDue * (Number(contractor.retentionPercent || 0) / 100);
+  const payableThisMeasurement = Math.max(totalDue - previousDue - retentionAmount, 0);
+
+  return {
+    rows,
+    totalDue,
+    currentAmount,
+    previousDue,
+    retentionAmount,
+    payableThisMeasurement,
+  };
+}
+
+function getCumulativePaidBefore(measurement) {
+  if (!measurement) {
+    return 0;
+  }
+  return Number(measurement.previousDue || 0) + Number(measurement.payableThisMeasurement || 0);
+}
+
+function getContractorMeasurements(measurements, contractorId) {
+  return measurements.filter((item) => item.contractorId === contractorId);
+}
+
+function getContractorById(contractors, contractorId) {
+  return contractors.find((item) => item.id === contractorId) || null;
+}
+
+function getLastIssuedMeasurement(measurements, contractorId) {
+  const items = getContractorMeasurements(measurements, contractorId).filter(
+    (item) => item.status === "issued" || item.status === "closed"
+  );
+  return items.length ? items[items.length - 1] : null;
+}
+
+function hasFinalClearanceMeasurement(measurements, contractorId) {
+  return getContractorMeasurements(measurements, contractorId).some(
+    (item) =>
+      item.type === "clearance" && (item.status === "issued" || item.status === "closed")
+  );
+}
+
+function buildMeasurementDraft(contractor, measurements, settings) {
+  const last = getLastIssuedMeasurement(measurements, contractor.id);
+  const lastRows = last ? last.rows : [];
+  const rows = contractor.items.map((item) => {
+    const previous = lastRows.find((row) => row.itemId === item.id);
+    return {
+      id: makeId("mrow"),
+      itemId: item.id,
+      title: item.title,
+      unit: item.unit,
+      contractQuantity: item.contractQuantity,
+      unitPrice: item.unitPrice,
+      retentionPercent: item.retentionPercent || 0,
+      progressPercent: item.progressPercent || 0,
+      isCustom: false,
+      previousQty: previous ? Number(previous.previousQty || 0) + Number(previous.currentQty || 0) : 0,
+      currentQty: 0,
+      notes: "",
+    };
+  });
+
+    return {
+      id: "draft",
+      contractorId: contractor.id,
+      issueNo: getNextIssueNo(contractor, last, settings),
+      type: "regular",
+      status: "draft",
+      date: dateInput(),
+      pdfPath: "",
+      signedPdfPath: "",
+      handoverPdfPath: "",
+      generalNotes: "",
+      handoverIssued: false,
+      previousDueManual: last ? getCumulativePaidBefore(last) : 0,
+      rows,
+      auditLog: [],
+    };
+}
+
+function blankContractor() {
+  return {
+    id: "",
+    name: "",
+    contractNumber: "",
+    workNumber: "",
+    workName: "",
+    retentionPercent: 10,
+    contractPdfPath: "",
+    contractAddendums: [],
+    useItemRetention: false,
+    showProgressPercent: false,
+    items: [
+      {
+        id: makeId("item"),
+        title: "",
+        unit: DEFAULT_UNITS[2],
+        contractQuantity: 0,
+        unitPrice: 0,
+        retentionPercent: 0,
+        progressPercent: 0,
+      },
+    ],
+    updatedAt: "",
+  };
+}
+
+function measurementTypeLabel(type) {
+  return type === "clearance" ? "Ø°Ø±Ø¹Ø© ØªØµÙÙŠØ©" : "Ø°Ø±Ø¹Ø© Ø§Ø¹ØªÙŠØ§Ø¯ÙŠØ©";
+}
+
+function measurementStatusLabel(measurement) {
+  if (!measurement) {
+    return "";
+  }
+  if (measurement.status === "closed" && measurement.type === "clearance") {
+    return "Ù…ØºÙ„Ù‚Ø© - ØªØµÙÙŠØ©";
+  }
+  if (measurement.status === "closed") {
+    return "Ù…ØºÙ„Ù‚Ø©";
+  }
+  if (measurement.status === "issued" && measurement.type === "clearance") {
+    return "ØµØ§Ø¯Ø±Ø© - ØªØµÙÙŠØ©";
+  }
+  if (measurement.status === "issued") {
+    return "ØµØ§Ø¯Ø±Ø©";
+  }
+  return "Ù…Ø³ÙˆØ¯Ø©";
+}
+
+function signatureStatusLabel(measurement) {
+  return measurement && measurement.signedPdfPath ? "Ù…Ø±ÙÙ‚Ø©" : "ØºÙŠØ± Ù…Ø±ÙÙ‚Ø©";
+}
+
+function getNextIssueNo(contractor, lastIssuedMeasurement, settings) {
+  const basePrefix =
+    sanitizeSegment(contractor.workNumber || contractor.contractNumber || settings.projectSequence || "1");
+
+  if (!lastIssuedMeasurement || !lastIssuedMeasurement.issueNo) {
+    return `${basePrefix}-1`;
+  }
+
+  const lastValue = String(lastIssuedMeasurement.issueNo).trim();
+  const hyphenMatch = lastValue.match(/^(.*?)-(\d+)$/);
+  if (hyphenMatch) {
+    const number = Number(hyphenMatch[2] || 0) + 1;
+    return `${basePrefix}-${number}`;
+  }
+
+  const numericMatch = lastValue.match(/(\d+)$/);
+  if (numericMatch) {
+    const next = Number(numericMatch[1] || 0) + 1;
+    return `${basePrefix}-${next}`;
+  }
+
+  return `${basePrefix}-1`;
+}
+
+function buildStoragePaths(settings, contractor, measurement) {
+  const projectDir = sanitizeSegment(
+    `${settings.projectCode || "PROJECT"}-${settings.projectName || "Project"}`
+  );
+  const contractorDir = sanitizeSegment(
+    contractor?.name || contractor?.contractNumber || contractor?.workNumber || "Contractor"
+  );
+  const measurementDir = sanitizeSegment(measurement?.issueNo || "measurement");
+  const root = joinWindowsPath(settings.filesPath, contractorDir);
+  const copiesRoot = joinWindowsPath(settings.newCopiesPath || settings.filesPath, contractorDir);
+
+  return {
+    root,
+    contractsDir: joinWindowsPath(root, "Contracts"),
+    measurementsDir: copiesRoot,
+    signedDir: joinWindowsPath(root, "Signed"),
+    handoverDir: joinWindowsPath(root, "Handover"),
+    logosDir: joinWindowsPath(settings.filesPath, projectDir, "Assets"),
+    measurementDir,
+  };
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+
+function buildPrintHtml({ settings, contractor, measurement, summary }) {
+  const showContractQuantity = Boolean(settings.showContractQuantityInMeasurement);
+  const showRemainingQty = Boolean(settings.showRemainingQtyInMeasurement);
+  const showItemRetention = Boolean(contractor.useItemRetention);
+  const showProgressPercent = Boolean(contractor.showProgressPercent);
+  const retentionLabel =
+    measurement.type === "clearance"
+      ? "0%"
+      : contractor.useItemRetention
+        ? "حسب الفقرة"
+        : `${contractor.retentionPercent || 0}%`;
+  const addendumCount = (contractor.contractAddendums || []).filter((item) => item.path).length;
+  const logoHtml = settings.logoPath
+    ? `<img src="${escapeHtml(toFileUrl(settings.logoPath))}" alt="شعار المشروع" class="logo" />`
+    : `<div class="logo placeholder">شعار المشروع</div>`;
+  const programLogoHtml = `<img src="${escapeHtml(resolveAssetUrl(PROGRAM_LOGO_URL))}" alt="${escapeHtml(APP_NAME)}" class="logo app-logo" />`;
+  const rowsHtml = summary.rows
+    .map(
+      (row, index) => `
+        <tr>
+          <td>${escapeHtml(index + 1)}</td>
+          <td class="text-right item-title">${escapeHtml(row.title)}</td>
+          <td>${escapeHtml(row.unit)}</td>
+          <td>${escapeHtml(money(row.unitPrice))}</td>
+          ${showContractQuantity ? `<td>${escapeHtml(blankIfZero(row.contractQuantity))}</td>` : ""}
+          ${showItemRetention ? `<td>${escapeHtml(row.retentionPercent)}</td>` : ""}
+          <td>${escapeHtml(row.previousQty)}</td>
+          <td>${escapeHtml(row.currentQty)}</td>
+          ${showProgressPercent ? `<td>${escapeHtml(row.progressPercent)}</td>` : ""}
+          <td>${escapeHtml(row.totalQty)}</td>
+          ${showRemainingQty ? `<td>${escapeHtml(row.remainingQty)}</td>` : ""}
+          <td>${escapeHtml(money(row.previousAmount))}</td>
+          <td>${escapeHtml(money(row.currentAmount))}</td>
+          <td>${escapeHtml(money(row.totalAmount))}</td>
+          <td class="notes-cell">${escapeHtml(row.notes)}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+  return `<!doctype html>
+  <html lang="ar" dir="rtl">
+    <head>
+      <meta charset="utf-8" />
+      <title>${escapeHtml(measurement.issueNo)}</title>
+      <style>
+        * { box-sizing: border-box; }
+        @page { size: A4 landscape; margin: 8mm 8mm 20mm 8mm; }
+        body { font-family: Tahoma, Arial, sans-serif; margin: 0; color: #111; direction: rtl; background: #fff; }
+        .sheet { width: 100%; }
+        .top-zone { display:grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: start; margin-bottom: 6px; }
+        .logos-stack { display:grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+        .logo { width: 66px; height: 58px; object-fit: contain; border: 1px solid #8da5bf; border-radius: 8px; background:#fff; }
+        .logo.placeholder { display:flex; align-items:center; justify-content:center; font-size:11px; color:#54657a; background:#f7fbff; }
+        .company { text-align: center; }
+        .company h1 { margin:0; font-size: 15px; color:#0f3f6d; }
+        .company h2 { margin: 2px 0 0; font-size: 11px; color:#33485c; }
+        .company p { margin: 2px 0 0; font-size: 10px; color:#53657c; }
+        table { width:100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { border:1px solid #9dadbb; padding:4px; font-size:10px; text-align:center; vertical-align: top; }
+        th { background:#dfe9f3; color:#123b62; font-weight:700; }
+        .header-table td { background:#fbfcfe; }
+        .label { font-size: 9px; font-weight:700; color:#38536b; margin-bottom: 2px; }
+        .value { font-size: 11px; font-weight:700; }
+        .small-value { font-size: 10px; }
+        .section-title, .summary-title { margin-top: 8px; font-size: 13px; font-weight:700; color:#7a4e15; }
+        .text-right { text-align:right; }
+        .item-title, .notes-cell { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; text-align:right; line-height: 1.5; }
+        .item-title { min-width: 260px; }
+        .notes-cell { min-width: 120px; }
+        .summary-grid { display:grid; grid-template-columns: repeat(5, 1fr); gap:8px; margin-top:8px; }
+        .summary-box { border:1px solid #8ea3b5; background:#fbfcfe; min-height:60px; padding:8px; }
+        .summary-box .value { font-size: 16px; }
+        .accounting-grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; margin-top:8px; }
+        .accounting-box { border:1px solid #8ea3b5; background:#fbfcfe; min-height:70px; padding:8px; }
+        .fill-box { margin-top:6px; min-height:32px; border:1px dashed #8ea3b5; background:#fff; }
+        .print-footer { position: fixed; left: 8mm; right: 8mm; bottom: 6mm; }
+        .signatures { display:grid; grid-template-columns: repeat(6, 1fr); gap:10px; }
+        .signature-box { border-top: 1px solid #777; padding-top: 7px; text-align:center; min-height: 28px; font-size: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="sheet">
+        <div class="top-zone">
+          <div class="logos-stack">${logoHtml}${programLogoHtml}</div>
+          <div class="company">
+            <h1>${escapeHtml(settings.companyName)}</h1>
+            <h2>${escapeHtml(APP_NAME)}</h2>
+            <p>ذرعة أعمال المتعهد</p>
+          </div>
+        </div>
+
+        <table class="header-table">
+          <tr>
+            <td><div class="label">رقم الذرعة</div><div class="value">${escapeHtml(measurement.issueNo)}</div></td>
+            <td><div class="label">نوع الذرعة</div><div class="value small-value">${escapeHtml(measurementTypeLabel(measurement.type))}</div></td>
+            <td><div class="label">التاريخ</div><div class="value small-value">${escapeHtml(measurement.date)}</div></td>
+            <td><div class="label">رمز المشروع</div><div class="value">${escapeHtml(settings.projectCode)}</div></td>
+          </tr>
+          <tr>
+            <td><div class="label">اسم المتعهد</div><div class="value small-value">${escapeHtml(contractor.name)}</div></td>
+            <td><div class="label">رقم العقد</div><div class="value">${escapeHtml(contractor.contractNumber)}</div></td>
+            <td><div class="label">رقم ملاحق العقود</div><div class="value">${escapeHtml(addendumCount)}</div></td>
+            <td><div class="label">رقم العمل</div><div class="value">${escapeHtml(contractor.workNumber)}</div></td>
+          </tr>
+          <tr>
+            <td colspan="2"><div class="label">العمل</div><div class="value small-value">${escapeHtml(contractor.workName)}</div></td>
+            <td><div class="label">التأمينات</div><div class="value">${escapeHtml(retentionLabel)}</div></td>
+            <td><div class="label">حالة الذرعة</div><div class="value small-value">${escapeHtml(measurementStatusLabel(measurement))}</div></td>
+          </tr>
+        </table>
+
+        <div class="section-title">تفاصيل فقرات الأعمال</div>
+        <table>
+          <thead>
+            <tr>
+              <th>ت</th>
+              <th>اسم الفقرة</th>
+              <th>الوحدة</th>
+              <th>سعر الفقرة</th>
+              ${showContractQuantity ? '<th>الكمية التعاقدية</th>' : ''}
+              ${showItemRetention ? '<th>تأمينات الفقرة %</th>' : ''}
+              <th>الكمية السابقة</th>
+              <th>الإنجاز الحالي</th>
+              ${showProgressPercent ? '<th>نسبة الإنجاز %</th>' : ''}
+              <th>التراكمي الكلي</th>
+              ${showRemainingQty ? '<th>المتبقي</th>' : ''}
+              <th>مبلغ السابق</th>
+              <th>مبلغ الحالي</th>
+              <th>المبلغ الكلي</th>
+              <th>الملاحظات</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+
+        <div class="summary-title">الخلاصة المالية (دينار)</div>
+        <div class="summary-grid">
+          <div class="summary-box"><div class="label">مبلغ الإنجاز التراكمي الكلي</div><div class="value">${escapeHtml(money(summary.totalDue))}</div></div>
+          <div class="summary-box"><div class="label">المبلغ الواجب دفعه سابقاً</div><div class="value">${escapeHtml(money(summary.previousDue))}</div></div>
+          <div class="summary-box"><div class="label">مبلغ الإنجاز الحالي</div><div class="value">${escapeHtml(money(summary.currentAmount))}</div></div>
+          <div class="summary-box"><div class="label">مبلغ التأمينات</div><div class="value">${escapeHtml(money(summary.retentionAmount))}</div></div>
+          <div class="summary-box"><div class="label">المبلغ الواجب دفعه لهذه الذرعة</div><div class="value">${escapeHtml(money(summary.payableThisMeasurement))}</div></div>
+        </div>
+
+        <div class="summary-title">الخلاصة الحسابية</div>
+        <div class="accounting-grid">
+          <div class="accounting-box"><div class="label">المبلغ المستلم من قبل المتعهد</div><div class="fill-box"></div></div>
+          <div class="accounting-box"><div class="label">المبلغ المتبقي</div><div class="fill-box"></div></div>
+          <div class="accounting-box"><div class="label">الملاحظات</div><div class="fill-box"></div></div>
+        </div>
+      </div>
+      <div class="print-footer">
+        <div class="signatures">
+          <div class="signature-box">المتعهد</div>
+          <div class="signature-box">قسم تخطيط المشروع</div>
+          <div class="signature-box">محاسب المشروع</div>
+          <div class="signature-box">مدير المشروع</div>
+          <div class="signature-box">المدقق الفني</div>
+          <div class="signature-box">قسم المشاريع</div>
+        </div>
+      </div>
+    </body>
+  </html>`;
+}
+function App() {
+
+  const [data, setData] = useState(null);
+  const [view, setView] = useState("measurements");
+  const [selectedContractorId, setSelectedContractorId] = useState("");
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState("draft");
+  const [contractorForm, setContractorForm] = useState(blankContractor());
+  const [measurementForm, setMeasurementForm] = useState(null);
+  const [measurementEditable, setMeasurementEditable] = useState(true);
+  const [message, setMessage] = useState("");
+  const [licenseKeyInput, setLicenseKeyInput] = useState("");
+  const [archiveSearch, setArchiveSearch] = useState("");
+  const [measurementSearch, setMeasurementSearch] = useState("");
+  const [draftSeed, setDraftSeed] = useState(0);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [selectedArchiveContractorId, setSelectedArchiveContractorId] = useState("");
+  const [desktopInfo, setDesktopInfo] = useState(null);
+  const [licenseInfo, setLicenseInfo] = useState(null);
+  const [pendingAddendumId, setPendingAddendumId] = useState("");
+  const contractPdfInputRef = useRef(null);
+  const addendumPdfInputRef = useRef(null);
+  const signedPdfInputRef = useRef(null);
+  const handoverPdfInputRef = useRef(null);
+  const logoInputRef = useRef(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    loadStoredData().then((loaded) => {
+      if (!mounted) {
+        return;
+      }
+      const next = loaded && loaded.settings ? loaded : initialData;
+      setData(next);
+      setSelectedContractorId(next.contractors[0] ? next.contractors[0].id : "");
+      setSelectedArchiveContractorId(
+        next.measurements[0]?.contractorId || next.contractors[0]?.id || ""
+      );
+    });
+
+    if (window.desktopApi?.getInfo) {
+      window.desktopApi.getInfo().then((info) => {
+        if (mounted) {
+          setDesktopInfo(info);
+          setLicenseInfo(info.license || null);
+        }
+      });
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (data) {
+      persistData(data);
+    }
+  }, [data]);
+
+  useEffect(() => {
+    if (!desktopInfo?.databasePath || !data) {
+      return;
+    }
+    if (data.settings.databasePath === desktopInfo.databasePath) {
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      settings: {
+        ...current.settings,
+        databasePath: desktopInfo.databasePath,
+      },
+    }));
+  }, [desktopInfo, data]);
+
+  const selectedContractor = useMemo(() => {
+    if (!data) {
+      return null;
+    }
+    return data.contractors.find((item) => item.id === selectedContractorId) || null;
+  }, [data, selectedContractorId]);
+
+  useEffect(() => {
+    if (!selectedContractor) {
+      setContractorForm(blankContractor());
+      setMeasurementForm(null);
+      setMeasurementEditable(true);
+      return;
+    }
+
+    setContractorForm(deepClone(selectedContractor));
+
+    const measurement =
+      selectedMeasurementId === "draft"
+        ? hasFinalClearanceMeasurement(data.measurements, selectedContractor.id)
+          ? getLastIssuedMeasurement(data.measurements, selectedContractor.id)
+          : buildMeasurementDraft(selectedContractor, data.measurements, data.settings)
+        : data.measurements.find((item) => item.id === selectedMeasurementId);
+
+    if (measurement) {
+      setMeasurementForm(deepClone(measurement));
+      setMeasurementEditable(
+        selectedMeasurementId === "draft"
+          ? true
+          : measurement.status === "issued"
+            ? false
+            : measurement.status !== "closed"
+      );
+    } else {
+      setMeasurementForm(null);
+      setMeasurementEditable(true);
+    }
+  }, [data, selectedContractor, selectedMeasurementId, draftSeed]);
+
+  function flash(text) {
+    setMessage(text);
+    window.setTimeout(() => setMessage(""), 3000);
+  }
+
+  if (!data) {
+    return <div className="loading-screen">Ø¬Ø§Ø±ÙŠ ØªØ­Ù…ÙŠÙ„ Ø§Ù„Ù†Ø¸Ø§Ù…...</div>;
+  }
+
+  const allArchivedMeasurements = data.measurements
+    .map((measurement) => ({
+      measurement,
+      contractor: getContractorById(data.contractors, measurement.contractorId),
+    }))
+    .filter(({ contractor }) => contractor);
+  const globalArchiveResults = allArchivedMeasurements.filter(({ measurement, contractor }) => {
+    const search = archiveSearch.trim().toLowerCase();
+    if (!search) {
+      return true;
+    }
+    return (
+      String(contractor.name || "").toLowerCase().includes(search) ||
+      String(contractor.contractNumber || "").toLowerCase().includes(search) ||
+      String(measurement.issueNo || "").toLowerCase().includes(search)
+    );
+  });
+  const filteredMeasurementContractors = data.contractors.filter((contractor) => {
+    const search = measurementSearch.trim().toLowerCase();
+    if (!search) {
+      return true;
+    }
+    return (
+      String(contractor.name || "").toLowerCase().includes(search) ||
+      String(contractor.contractNumber || "").toLowerCase().includes(search) ||
+      String(contractor.workNumber || "").toLowerCase().includes(search)
+    );
+  });
+  const archiveGroups = data.contractors
+    .map((contractor) => ({
+      contractor,
+      measurements: globalArchiveResults
+        .filter((entry) => entry.contractor.id === contractor.id)
+        .map((entry) => entry.measurement),
+    }))
+    .filter((entry) => entry.measurements.length > 0);
+  const selectedArchiveGroup =
+    archiveGroups.find((entry) => entry.contractor.id === selectedArchiveContractorId) ||
+    archiveGroups[0] ||
+    null;
+  const selectedArchiveMeasurement =
+    selectedArchiveGroup?.measurements.find((item) => item.id === selectedMeasurementId) ||
+    selectedArchiveGroup?.measurements[0] ||
+    null;
+  const contractorMeasurementHistory = selectedContractor
+    ? getContractorMeasurements(data.measurements, selectedContractor.id)
+        .slice()
+        .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+    : [];
+  const lastMeasurement = selectedContractor
+    ? getLastIssuedMeasurement(data.measurements, selectedContractor.id)
+    : null;
+  const lastPayable = lastMeasurement ? getCumulativePaidBefore(lastMeasurement) : 0;
+  const summaryPreviousDueBase = measurementForm
+    ? selectedMeasurementId === "draft"
+      ? lastPayable
+      : Number(measurementForm.previousDue || 0)
+    : 0;
+  const currentSummary =
+    measurementForm && selectedContractor
+      ? measurementSummary(
+          measurementForm,
+          selectedContractor,
+          summaryPreviousDueBase,
+          data.settings
+        )
+      : null;
+  const measurementReady = Boolean(measurementForm && currentSummary);
+  const unitOptions = normalizeUnitOptions(data.settings.unitOptions);
+
+  function updateSettings(field, value) {
+    setData((current) => ({
+      ...current,
+      settings: { ...current.settings, [field]: value },
+    }));
+  }
+
+  function updateUnitOptions(value) {
+    updateSettings("unitOptions", normalizeUnitOptions(value));
+  }
+
+  function updateContractor(field, value) {
+    const numericFields = new Set(["retentionPercent"]);
+    setContractorForm((current) => ({
+      ...current,
+      [field]: numericFields.has(field) ? parseNumericInput(value) : value,
+    }));
+  }
+
+  function updateItem(itemId, field, value) {
+    const numericFields = new Set([
+      "contractQuantity",
+      "unitPrice",
+      "retentionPercent",
+      "progressPercent",
+    ]);
+    setContractorForm((current) => ({
+      ...current,
+      items: current.items.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              [field]: numericFields.has(field) ? parseNumericInput(value) : value,
+            }
+          : item
+      ),
+    }));
+  }
+
+  function addContractItem() {
+    setContractorForm((current) => ({
+      ...current,
+      items: [
+        ...current.items,
+        {
+          id: makeId("item"),
+          title: "",
+          unit: unitOptions[0] || DEFAULT_UNITS[0],
+          contractQuantity: 0,
+          unitPrice: 0,
+          retentionPercent: 0,
+          progressPercent: 0,
+        },
+      ],
+    }));
+  }
+
+  function addContractAddendum() {
+    setContractorForm((current) => ({
+      ...current,
+      contractAddendums: [
+        ...(current.contractAddendums || []),
+        {
+          id: makeId("addendum"),
+          title: `Ù…Ù„Ø­Ù‚ Ø¹Ù‚Ø¯ ${(current.contractAddendums || []).length + 1}`,
+          path: "",
+        },
+      ],
+    }));
+  }
+
+  function updateContractAddendum(addendumId, field, value) {
+    setContractorForm((current) => ({
+      ...current,
+      contractAddendums: (current.contractAddendums || []).map((item) =>
+        item.id === addendumId ? { ...item, [field]: value } : item
+      ),
+    }));
+  }
+
+  async function pickContractPdf() {
+    if (window.desktopApi?.pickPdf) {
+      const file = await window.desktopApi.pickPdf();
+      if (file) {
+        const managedPath = await storeManagedFile(file, "contract");
+        updateContractor("contractPdfPath", managedPath);
+      }
+      return;
+    }
+
+    if (contractPdfInputRef.current) {
+      contractPdfInputRef.current.click();
+    }
+  }
+
+  async function pickContractAddendum(addendumId, index) {
+    if (window.desktopApi?.pickPdf) {
+      const file = await window.desktopApi.pickPdf();
+      if (file) {
+        const managedPath = await storeManagedFile(
+          file,
+          "contract",
+          `contract-addendum-${index + 1}${fileExtension(file) || ".pdf"}`
+        );
+        updateContractAddendum(addendumId, "path", managedPath);
+      }
+      return;
+    }
+
+    setPendingAddendumId(addendumId);
+    if (addendumPdfInputRef.current) {
+      addendumPdfInputRef.current.click();
+    }
+  }
+
+  async function pickLogo() {
+    if (window.desktopApi?.pickImage) {
+      const file = await window.desktopApi.pickImage();
+      if (!file) {
+        return;
+      }
+      const managedPath = await storeManagedFile(
+        file,
+        "logo",
+        `project-logo${fileExtension(file) || ".png"}`
+      );
+      updateSettings("logoPath", managedPath);
+      flash("ØªÙ… Ø­ÙØ¸ Ø´Ø¹Ø§Ø± Ø§Ù„Ù…Ø´Ø±ÙˆØ¹.");
+      return;
+    }
+
+    if (logoInputRef.current) {
+      logoInputRef.current.click();
+    }
+  }
+
+  async function pickDatabasePath() {
+    if (!window.desktopApi?.pickDatabasePath) {
+      flash("Ø§Ø®ØªÙŠØ§Ø± Ù…Ø³Ø§Ø± Ù‚Ø§Ø¹Ø¯Ø© Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª ÙŠØ¹Ù…Ù„ ÙÙŠ Ù†Ø³Ø®Ø© Ø³Ø·Ø­ Ø§Ù„Ù…ÙƒØªØ¨ ÙÙ‚Ø·.");
+      return;
+    }
+    const pickedPath = await window.desktopApi.pickDatabasePath();
+    if (!pickedPath) {
+      return;
+    }
+    updateSettings("databasePath", pickedPath);
+    const info = await window.desktopApi.getInfo?.();
+    if (info) {
+      setDesktopInfo(info);
+      setLicenseInfo(info.license || null);
+    }
+    flash("ØªÙ… ØªØ­Ø¯ÙŠØ« Ù…Ø³Ø§Ø± Ù‚Ø§Ø¹Ø¯Ø© Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª.");
+  }
+
+  async function pickFilesPath() {
+    if (!window.desktopApi?.pickFolder) {
+      flash("Ø§Ø®ØªÙŠØ§Ø± Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù…Ù„ÙØ§Øª ÙŠØ¹Ù…Ù„ ÙÙŠ Ù†Ø³Ø®Ø© Ø³Ø·Ø­ Ø§Ù„Ù…ÙƒØªØ¨ ÙÙ‚Ø·.");
+      return;
+    }
+
+    const pickedPath = await window.desktopApi.pickFolder({
+      title: "Ø­Ø¯Ø¯ Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù…Ù„ÙØ§Øª",
+      defaultPath: data.settings.filesPath || "C:\\ContractorDesk\\Files",
+    });
+
+    if (!pickedPath) {
+      return;
+    }
+
+    updateSettings("filesPath", pickedPath);
+    flash("ØªÙ… ØªØ­Ø¯ÙŠØ« Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù…Ù„ÙØ§Øª.");
+  }
+
+  async function pickNewCopiesPath() {
+    if (!window.desktopApi?.pickFolder) {
+      flash("Ø§Ø®ØªÙŠØ§Ø± Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù†Ø³Ø® Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø© ÙŠØ¹Ù…Ù„ ÙÙŠ Ù†Ø³Ø®Ø© Ø³Ø·Ø­ Ø§Ù„Ù…ÙƒØªØ¨ ÙÙ‚Ø·.");
+      return;
+    }
+
+    const pickedPath = await window.desktopApi.pickFolder({
+      title: "Ø­Ø¯Ø¯ Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù†Ø³Ø® Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©",
+      defaultPath:
+        data.settings.newCopiesPath || data.settings.filesPath || "C:\\ContractorDesk\\IssuedCopies",
+    });
+
+    if (!pickedPath) {
+      return;
+    }
+
+    updateSettings("newCopiesPath", pickedPath);
+    flash("ØªÙ… ØªØ­Ø¯ÙŠØ« Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù†Ø³Ø® Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©.");
+  }
+
+  async function activateOfflineLicense() {
+    if (!window.desktopApi?.activateLicense) {
+      flash("Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø£ÙˆÙÙ„Ø§ÙŠÙ† ÙŠØ¹Ù…Ù„ ÙÙŠ Ù†Ø³Ø®Ø© Ø³Ø·Ø­ Ø§Ù„Ù…ÙƒØªØ¨ ÙÙ‚Ø·.");
+      return;
+    }
+    const result = await window.desktopApi.activateLicense(licenseKeyInput);
+    if (!result?.ok) {
+      flash("ÙØ´Ù„ Ø§Ù„ØªÙØ¹ÙŠÙ„. ØªØ­Ù‚Ù‚ Ù…Ù† ÙƒÙˆØ¯ Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø£Ùˆ Ø±Ø¨Ø·Ù‡ Ø¨Ù‡Ø°Ø§ Ø§Ù„Ø¬Ù‡Ø§Ø².");
+      return;
+    }
+    const status = await window.desktopApi.getLicenseStatus?.();
+    setLicenseInfo(status || null);
+    setLicenseKeyInput("");
+    flash(`ØªÙ… Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø¨Ù†Ø¬Ø§Ø­. Ù†ÙˆØ¹ Ø§Ù„Ø±Ø®ØµØ©: ${result.plan}`);
+  }
+
+  async function storeManagedFile(sourcePath, category, fileNameOverride) {
+    if (!window.desktopApi?.copyFile) {
+      return sourcePath;
+    }
+
+    const paths = buildStoragePaths(
+      data.settings,
+      selectedContractor || contractorForm || null,
+      measurementForm || {}
+    );
+    let targetDir = paths.root;
+
+    if (category === "contract") {
+      targetDir = paths.contractsDir;
+    } else if (category === "signed") {
+      targetDir = paths.signedDir;
+    } else if (category === "handover") {
+      targetDir = paths.handoverDir;
+    } else if (category === "logo") {
+      targetDir = paths.logosDir;
+    } else if (category === "measurement") {
+      targetDir = paths.measurementsDir;
+    }
+
+    const sourceParts = String(sourcePath).split(/[/\\]/);
+    const sourceName = sourceParts[sourceParts.length - 1] || "file";
+    const targetName = fileNameOverride || sourceName;
+    const targetPath = joinWindowsPath(targetDir, targetName);
+
+    const result = await window.desktopApi.copyFile({
+      sourcePath,
+      targetPath,
+    });
+
+    return result && result.targetPath ? result.targetPath : sourcePath;
+  }
+
+  function saveContractor() {
+    if (!contractorForm.name || !contractorForm.contractNumber || !contractorForm.workName) {
+      flash("Ø£Ø¯Ø®Ù„ Ø§Ø³Ù… Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ ÙˆØ±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯ ÙˆØ§Ù„Ø¹Ù…Ù„ Ù‚Ø¨Ù„ Ø§Ù„Ø­ÙØ¸.");
+      return;
+    }
+
+    const contractor = {
+      ...normalizeContractor(contractorForm),
+      id: contractorForm.id || makeId("ctr"),
+      updatedAt: new Date().toLocaleString("en-CA"),
+    };
+
+    setData((current) => {
+      const exists = current.contractors.some((item) => item.id === contractor.id);
+      return {
+        ...current,
+        contractors: exists
+          ? current.contractors.map((item) => (item.id === contractor.id ? contractor : item))
+          : [...current.contractors, contractor],
+      };
+    });
+    setSelectedContractorId(contractor.id);
+    flash("ØªÙ… Ø­ÙØ¸ Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ ÙˆØ§Ù„Ø¹Ù‚Ø¯.");
+  }
+
+  function newContractor() {
+    setSelectedContractorId("");
+    setSelectedMeasurementId("draft");
+    setContractorForm(blankContractor());
+  }
+
+  function startNewMeasurement(contractorId = selectedContractorId) {
+    const nextContractorId = contractorId || selectedContractorId;
+    if (!nextContractorId) {
+      flash("Ø§Ø®ØªØ± Ù…ØªØ¹Ù‡Ø¯Ø§Ù‹ Ø£ÙˆÙ„Ø§Ù‹ Ù„Ø¨Ø¯Ø¡ Ø°Ø±Ø¹Ø© Ø¬Ø¯ÙŠØ¯Ø©.");
+      return;
+    }
+    if (hasFinalClearanceMeasurement(data.measurements, nextContractorId)) {
+      flash("ØªÙ… Ø¥ØµØ¯Ø§Ø± Ø°Ø±Ø¹Ø© ØªØµÙÙŠØ© Ù„Ù‡Ø°Ø§ Ø§Ù„Ø¹Ù‚Ø¯ Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„ØŒ ÙˆÙ„Ø§ ÙŠÙ…ÙƒÙ† Ø¥Ù†Ø´Ø§Ø¡ Ø°Ø±Ø¹Ø© Ø¬Ø¯ÙŠØ¯Ø© Ø¨Ø¹Ø¯ Ø§Ù„ØªØµÙÙŠØ©.");
+      return;
+    }
+    setSelectedContractorId(nextContractorId);
+    setSelectedMeasurementId("draft");
+    setDraftSeed(Date.now());
+    setView("measurements");
+  }
+
+  function openMeasurementRecord(measurementId, contractorId = selectedContractorId) {
+    if (!measurementId || !contractorId) {
+      return;
+    }
+    setSelectedContractorId(contractorId);
+    setSelectedMeasurementId(measurementId);
+    setDraftSeed(Date.now());
+    setView("measurements");
+  }
+
+  function updateMeasurement(field, value) {
+    const numericFields = new Set(["previousDueManual"]);
+    setMeasurementForm((current) => ({
+      ...current,
+      [field]: numericFields.has(field) ? parseNumericInput(value) : value,
+    }));
+  }
+
+  function updateMeasurementRow(rowId, field, value) {
+    const numericFields = new Set([
+      "unitPrice",
+      "contractQuantity",
+      "currentQty",
+      "retentionPercent",
+      "progressPercent",
+    ]);
+    const parsedValue = numericFields.has(field) ? parseNumericInput(value) : value;
+    setMeasurementForm((current) => ({
+      ...current,
+      rows: current.rows.map((row) =>
+        row.id === rowId
+          ? {
+              ...row,
+              [field]:
+                field === "currentQty"
+                  ? Math.max(
+                      0,
+                      Math.min(
+                        Number(parsedValue || 0),
+                        Number(row.contractQuantity || 0) > 0
+                          ? Math.max(
+                              Number(row.contractQuantity || 0) - Number(row.previousQty || 0),
+                              0
+                            )
+                          : Number(parsedValue || 0)
+                      )
+                    )
+                  : parsedValue,
+            }
+          : row
+      ),
+    }));
+  }
+
+  function addMeasurementRowFromContract() {
+    if (!selectedContractor) {
+      return;
+    }
+
+    setMeasurementForm((current) => ({
+      ...current,
+      rows: [
+        ...current.rows,
+        {
+          id: makeId("mrow"),
+          itemId: "",
+          title: "",
+          unit: unitOptions[0] || DEFAULT_UNITS[0],
+          contractQuantity: 0,
+          unitPrice: 0,
+          retentionPercent: 0,
+          progressPercent: 0,
+          isCustom: true,
+          previousQty: 0,
+          currentQty: 0,
+          notes: "",
+        },
+      ],
+    }));
+  }
+
+  function chooseContractItemForRow(rowId, itemId) {
+    const item = selectedContractor.items.find((entry) => entry.id === itemId);
+    if (!item) {
+      return;
+    }
+
+    const previousRow =
+      lastMeasurement &&
+      lastMeasurement.rows.find((row) => row.itemId === itemId);
+
+    setMeasurementForm((current) => ({
+      ...current,
+      rows: current.rows.map((row) =>
+        row.id === rowId
+          ? {
+              ...row,
+              itemId,
+              title: item.title,
+              unit: item.unit,
+              contractQuantity: item.contractQuantity,
+              unitPrice: item.unitPrice,
+              retentionPercent: item.retentionPercent || 0,
+              progressPercent: item.progressPercent || 0,
+              isCustom: false,
+              previousQty: previousRow
+                ? Number(previousRow.previousQty || 0) + Number(previousRow.currentQty || 0)
+                : 0,
+            }
+          : row
+      ),
+    }));
+  }
+
+  function isLockedMeasurement() {
+    return (
+      measurementForm &&
+      (measurementForm.status === "closed" ||
+        (measurementForm.status === "issued" && !measurementEditable))
+    );
+  }
+
+  function enableMeasurementEditing() {
+    if (!measurementForm || measurementForm.status !== "issued") {
+      return;
+    }
+    setMeasurementEditable(true);
+    flash("ØªÙ… ÙØªØ­ Ø§Ù„Ø°Ø±Ø¹Ø© Ø§Ù„ØµØ§Ø¯Ø±Ø© Ù„Ù„ØªØ¹Ø¯ÙŠÙ„.");
+  }
+
+  function closeMeasurement() {
+    if (!measurementForm || measurementForm.status === "closed") {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Ø³ÙŠØªÙ… Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø°Ø±Ø¹Ø© Ø¨Ø§Ø¹ØªØ¨Ø§Ø±Ù‡Ø§ Ù…ÙˆÙ‚Ø¹Ø© ÙˆÙ…Ø¹ØªÙ…Ø¯Ø©ØŒ ÙˆØ¨Ø¹Ø¯ Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ Ù„Ù† ÙŠÙ…ÙƒÙ† ØªØ¹Ø¯ÙŠÙ„Ù‡Ø§. Ù‡Ù„ ØªØ±ÙŠØ¯ Ø§Ù„Ù…ØªØ§Ø¨Ø¹Ø©ØŸ"
+    );
+    if (!confirmed) {
+      return;
+    }
+    saveMeasurement("closed");
+  }
+
+  function deleteIssuedMeasurement(measurementId) {
+    const target =
+      data.measurements.find((item) => item.id === measurementId) ||
+      (measurementForm && measurementForm.id === measurementId ? measurementForm : null);
+    if (!target || target.status !== "issued") {
+      flash("ÙŠÙ…ÙƒÙ† Ø­Ø°Ù Ø§Ù„Ø°Ø±Ø¹Ø§Øª Ø§Ù„ØµØ§Ø¯Ø±Ø© ÙÙ‚Ø·.");
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      measurements: current.measurements.filter((item) => item.id !== measurementId),
+    }));
+    setSelectedMeasurementId("draft");
+    setDraftSeed(Date.now());
+    flash("ØªÙ… Ø­Ø°Ù Ø§Ù„Ø°Ø±Ø¹Ø© Ø§Ù„ØµØ§Ø¯Ø±Ø©.");
+  }
+
+  function saveMeasurement(status) {
+    if (!measurementForm || !selectedContractor || !currentSummary) {
+      return;
+    }
+
+    const hasOverflow = currentSummary.rows.some(
+      (row) => Number(row.contractQuantity || 0) > 0 && Number(row.totalQty || 0) > Number(row.contractQuantity || 0)
+    );
+    if (hasOverflow) {
+      flash("ØªÙˆØ¬Ø¯ ÙÙ‚Ø±Ø© ØªØ¬Ø§ÙˆØ²Øª Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„Ø¹Ù‚Ø¯ÙŠØ©ØŒ ØµØ­Ø­ Ø§Ù„ÙƒÙ…ÙŠØ§Øª Ù‚Ø¨Ù„ Ø§Ù„Ø­ÙØ¸.");
+      return;
+    }
+
+    const hasNegative = currentSummary.rows.some((row) => Number(row.currentQty || 0) < 0);
+    if (hasNegative) {
+      flash("Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø­ÙØ¸ Ø°Ø±Ø¹Ø© ØªØ­ØªÙˆÙŠ Ø¹Ù„Ù‰ ÙƒÙ…ÙŠØ© Ø³Ø§Ù„Ø¨Ø©.");
+      return;
+    }
+
+    if (measurementForm.type === "clearance" && !measurementForm.handoverIssued) {
+      flash("Ø°Ø±Ø¹Ø© Ø§Ù„ØªØµÙÙŠØ© ØªØ­ØªØ§Ø¬ Ø¥Ù„Ù‰ ØªØ£ÙƒÙŠØ¯ Ø¥ØµØ¯Ø§Ø± Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù….");
+      return;
+    }
+
+    if (measurementForm.type === "clearance" && !measurementForm.handoverPdfPath) {
+      flash("Ø°Ø±Ø¹Ø© Ø§Ù„ØªØµÙÙŠØ© ØªØ­ØªØ§Ø¬ Ø¥Ù„Ù‰ Ø¥Ø±ÙØ§Ù‚ Ù…Ù„Ù Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù….");
+      return;
+    }
+
+    const rowsWithIds = measurementForm.rows.map((row) => {
+      if (row.itemId) {
+        return row;
+      }
+      return {
+        ...row,
+        itemId: makeId("item"),
+        isCustom: true,
+      };
+    });
+
+    const newContractItems = rowsWithIds
+      .filter((row) => row.itemId && !selectedContractor.items.some((item) => item.id === row.itemId))
+      .map((row) => ({
+        id: row.itemId,
+        title: row.title,
+        unit: row.unit,
+        contractQuantity: Number(row.contractQuantity || 0),
+        unitPrice: Number(row.unitPrice || 0),
+        retentionPercent: Number(row.retentionPercent || 0),
+        progressPercent: Number(row.progressPercent || 0),
+      }));
+
+    const payload = {
+      ...measurementForm,
+      id: measurementForm.id === "draft" ? makeId("mea") : measurementForm.id,
+      contractorId: selectedContractor.id,
+      status,
+      rows: rowsWithIds,
+      totalDue: currentSummary.totalDue,
+      currentAmount: currentSummary.currentAmount,
+      previousDue: currentSummary.previousDue,
+      retentionAmount: currentSummary.retentionAmount,
+      payableThisMeasurement: currentSummary.payableThisMeasurement,
+      auditLog: [
+        ...(measurementForm.auditLog || []),
+        {
+          id: makeId("audit"),
+          action:
+            status === "issued"
+              ? "Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ø°Ø±Ø¹Ø©"
+              : status === "closed"
+                ? "Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø°Ø±Ø¹Ø©"
+                : "Ø­ÙØ¸ Ø§Ù„Ø°Ø±Ø¹Ø©",
+          at: new Date().toLocaleString("en-CA"),
+        },
+      ],
+    };
+
+    setData((current) => {
+      const exists = current.measurements.some((item) => item.id === payload.id);
+      return {
+        ...current,
+        contractors: current.contractors.map((item) =>
+          item.id === selectedContractor.id
+            ? {
+                ...item,
+                items: [...item.items, ...newContractItems],
+              }
+            : item
+        ),
+        measurements: exists
+          ? current.measurements.map((item) => (item.id === payload.id ? payload : item))
+          : [...current.measurements, payload],
+      };
+    });
+    setSelectedMeasurementId(payload.id);
+    setMeasurementEditable(status === "issued" ? false : status !== "closed");
+    flash(
+      status === "issued"
+        ? "ØªÙ… Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ø°Ø±Ø¹Ø© ÙˆØ£Ø±Ø´ÙØªÙ‡Ø§."
+        : status === "closed"
+          ? "ØªÙ… Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø°Ø±Ø¹Ø© Ù†Ù‡Ø§Ø¦ÙŠØ§Ù‹."
+          : "ØªÙ… Ø­ÙØ¸ Ø§Ù„Ø°Ø±Ø¹Ø©."
+    );
+  }
+
+  function handleBrowserPdfPicked(event, target) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) {
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+
+    if (target === "contract") {
+      updateContractor("contractPdfPath", objectUrl);
+      flash("ØªÙ… Ø§Ø®ØªÙŠØ§Ø± Ù…Ù„Ù Ø§Ù„Ø¹Ù‚Ø¯.");
+    }
+
+    if (target === "addendum" && pendingAddendumId) {
+      updateContractAddendum(pendingAddendumId, "path", objectUrl);
+      setPendingAddendumId("");
+      flash("ØªÙ… Ø§Ø®ØªÙŠØ§Ø± Ù…Ù„Ù Ù…Ù„Ø­Ù‚ Ø§Ù„Ø¹Ù‚Ø¯.");
+    }
+
+    if (target === "signed") {
+      setMeasurementForm((current) => ({ ...current, signedPdfPath: objectUrl }));
+      flash("ØªÙ… Ø§Ø®ØªÙŠØ§Ø± Ø§Ù„Ù†Ø³Ø®Ø© Ø§Ù„Ù…ÙˆÙ‚Ø¹Ø©.");
+    }
+
+    if (target === "handover") {
+      setMeasurementForm((current) => ({ ...current, handoverPdfPath: objectUrl }));
+      flash("ØªÙ… Ø§Ø®ØªÙŠØ§Ø± Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù….");
+    }
+
+    if (target === "logo") {
+      updateSettings("logoPath", objectUrl);
+      flash("ØªÙ… Ø§Ø®ØªÙŠØ§Ø± Ø´Ø¹Ø§Ø± Ø§Ù„Ù…Ø´Ø±ÙˆØ¹.");
+    }
+
+    event.target.value = "";
+  }
+
+  async function attachSignedPdf() {
+    if (window.desktopApi?.pickPdf) {
+      const file = await window.desktopApi.pickPdf();
+      if (!file) {
+        return;
+      }
+      const managedPath = await storeManagedFile(file, "signed");
+      setMeasurementForm((current) => ({ ...current, signedPdfPath: managedPath }));
+      flash("ØªÙ… Ø±Ø¨Ø· Ø§Ù„Ù†Ø³Ø®Ø© Ø§Ù„Ù…ÙˆÙ‚Ø¹Ø©.");
+      return;
+    }
+
+    if (signedPdfInputRef.current) {
+      signedPdfInputRef.current.click();
+    }
+  }
+
+  async function attachHandoverPdf() {
+    if (window.desktopApi?.pickPdf) {
+      const file = await window.desktopApi.pickPdf();
+      if (!file) {
+        return;
+      }
+      const managedPath = await storeManagedFile(
+        file,
+        "handover",
+        `${sanitizeSegment(measurementForm?.issueNo || "handover")}-handover${fileExtension(file) || ".pdf"}`
+      );
+      setMeasurementForm((current) => ({ ...current, handoverPdfPath: managedPath }));
+      flash("ØªÙ… Ø±Ø¨Ø· Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù….");
+      return;
+    }
+
+    if (handoverPdfInputRef.current) {
+      handoverPdfInputRef.current.click();
+    }
+  }
+
+  async function exportMeasurementPdf() {
+    if (!measurementForm || !selectedContractor || !currentSummary) {
+      return;
+    }
+
+    const fileName = `${measurementForm.issueNo || "measurement"}.pdf`;
+    const paths = buildStoragePaths(data.settings, selectedContractor, measurementForm);
+    const filePath = window.desktopApi?.exportPdf
+      ? joinWindowsPath(paths.measurementsDir, fileName)
+      : fileName;
+    const printHtml = buildPrintHtml({
+      settings: data.settings,
+      contractor: selectedContractor,
+      measurement: measurementForm,
+      summary: currentSummary,
+    });
+
+    if (window.desktopApi?.exportPdf) {
+      const result = await window.desktopApi.exportPdf({
+        html: printHtml,
+        filePath,
+      });
+
+      if (!result?.ok) {
+        flash("ØªØ¹Ø°Ø± ØªØµØ¯ÙŠØ± Ù…Ù„Ù PDF Ù„Ù‡Ø°Ù‡ Ø§Ù„Ø°Ø±Ø¹Ø©.");
+        return;
+      }
+
+      setMeasurementForm((current) => ({
+        ...current,
+        pdfPath: result.filePath || filePath,
+      }));
+      flash("ØªÙ… ØªØµØ¯ÙŠØ± Ù…Ù„Ù PDF ÙˆØ­ÙØ¸Ù‡ ÙÙŠ Ù…Ø³Ø§Ø± Ø§Ù„Ù†Ø³Ø® Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©.");
+      return;
+    }
+
+    const printWindow = window.open("", "_blank", "width=1280,height=900");
+    if (!printWindow) {
+      flash("Ø§Ù„Ù…ØªØµÙØ­ Ù…Ù†Ø¹ Ù†Ø§ÙØ°Ø© Ø§Ù„Ø·Ø¨Ø§Ø¹Ø©. Ø§Ø³Ù…Ø­ Ø¨Ø§Ù„Ù†ÙˆØ§ÙØ° Ø§Ù„Ù…Ù†Ø¨Ø«Ù‚Ø© Ø«Ù… Ø£Ø¹Ø¯ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø©.");
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(printHtml);
+    printWindow.document.close();
+    printWindow.focus();
+    window.setTimeout(() => {
+      printWindow.print();
+    }, 350);
+
+    setMeasurementForm((current) => ({
+      ...current,
+      pdfPath: `Save as PDF -> ${fileName}`,
+    }));
+    flash("ØªÙ… ÙØªØ­ Ù†Ù…ÙˆØ°Ø¬ Ø¹Ø±Ø¨ÙŠ Ø¬Ø§Ù‡Ø² Ù„Ø­ÙØ¸ PDF.");
+  }
+
+  function openLinkedFile(pathValue) {
+    if (!pathValue) {
+      flash("Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ù…Ù„Ù Ù…Ø±ØªØ¨Ø· Ù„ÙØªØ­Ù‡.");
+      return;
+    }
+
+    if (window.desktopApi?.openPath) {
+      window.desktopApi.openPath(pathValue);
+      return;
+    }
+
+    if (String(pathValue).startsWith("Save as PDF ->")) {
+      flash("Ù‡Ø°Ø§ ØªØ°ÙƒÙŠØ± Ø¨Ø§Ù„Ø­ÙØ¸ ÙÙ‚Ø·. Ø§ÙØªØ­ Ù…Ù„Ù Ø§Ù„Ù€ PDF Ø§Ù„Ø°ÙŠ Ø­ÙØ¸ØªÙ‡ ÙŠØ¯ÙˆÙŠØ§Ù‹ Ù…Ù† Ø§Ù„Ù…ØªØµÙØ­.");
+      return;
+    }
+
+    if (/^[a-zA-Z]:\\/.test(String(pathValue))) {
+      flash("ÙØªØ­ Ø§Ù„Ù…Ø³Ø§Ø±Ø§Øª Ø§Ù„Ù…Ø­Ù„ÙŠØ© Ø§Ù„Ù…Ø¨Ø§Ø´Ø±Ø© ÙŠØ­ØªØ§Ø¬ Ù†Ø³Ø®Ø© Ø³Ø·Ø­ Ø§Ù„Ù…ÙƒØªØ¨ Ø£Ùˆ EXE.");
+      return;
+    }
+
+    window.open(pathValue, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div className={`desktop-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <input
+        ref={contractPdfInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden-input"
+        onChange={(event) => handleBrowserPdfPicked(event, "contract")}
+      />
+      <input
+        ref={addendumPdfInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden-input"
+        onChange={(event) => handleBrowserPdfPicked(event, "addendum")}
+      />
+      <input
+        ref={signedPdfInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden-input"
+        onChange={(event) => handleBrowserPdfPicked(event, "signed")}
+      />
+      <input
+        ref={handoverPdfInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        className="hidden-input"
+        onChange={(event) => handleBrowserPdfPicked(event, "handover")}
+      />
+      <input
+        ref={logoInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+        className="hidden-input"
+        onChange={(event) => handleBrowserPdfPicked(event, "logo")}
+      />
+      <aside className="side-panel">
+        <button
+          className="sidebar-toggle"
+          type="button"
+          onClick={() => setSidebarCollapsed((current) => !current)}
+          aria-label={sidebarCollapsed ? "Ø¥Ø¸Ù‡Ø§Ø± Ø§Ù„Ù‚Ø§Ø¦Ù…Ø©" : "Ø¥Ø®ÙØ§Ø¡ Ø§Ù„Ù‚Ø§Ø¦Ù…Ø©"}
+          title={sidebarCollapsed ? "Ø¥Ø¸Ù‡Ø§Ø± Ø§Ù„Ù‚Ø§Ø¦Ù…Ø©" : "Ø¥Ø®ÙØ§Ø¡ Ø§Ù„Ù‚Ø§Ø¦Ù…Ø©"}
+        >
+          {sidebarCollapsed ? "â˜°" : "Ã—"}
+        </button>
+
+        <div className="nav-block">
+          <button type="button" className={view === "measurements" ? "tab active" : "tab"} onClick={() => setView("measurements")}>
+            Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ø°Ø±Ø¹Ø§Øª
+          </button>
+          <button type="button" className={view === "contractors" ? "tab active" : "tab"} onClick={() => setView("contractors")}>
+            Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ÙˆÙ† ÙˆØ§Ù„Ø¹Ù‚ÙˆØ¯
+          </button>
+          <button type="button" className={view === "archive" ? "tab active" : "tab"} onClick={() => setView("archive")}>
+            Ø§Ù„Ø£Ø±Ø´ÙŠÙ
+          </button>
+          <button type="button" className={view === "settings" ? "tab active" : "tab"} onClick={() => setView("settings")}>
+            Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø£ÙˆÙ„ÙŠØ©
+          </button>
+        </div>
+
+        <div className="meta-card">
+          <div>
+            <span>Ø§Ù„Ù…Ø´Ø±ÙˆØ¹:</span>
+            <strong>{data.settings.projectName}</strong>
+          </div>
+          <div>
+            <span>Ø±Ù…Ø² Ø§Ù„Ù…Ø´Ø±ÙˆØ¹:</span>
+            <strong>{data.settings.projectCode}</strong>
+          </div>
+        </div>
+
+        <div className="meta-card developer-card">
+          <div className="developer-brand">
+            <img src={SPARDEX_LOGO_URL} alt="Spardex Lab" className="developer-logo-image" />
+            <div>
+              <span>Developed by</span>
+              <strong>Spardex Lab</strong>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <main className="workspace">
+        <header className="top-strip">
+          <div className="top-strip-brand">
+            <div className="top-strip-logos">
+              {data.settings.logoPath ? (
+                <img src={toFileUrl(data.settings.logoPath)} alt="Ø´Ø¹Ø§Ø± Ø§Ù„Ù…Ø´Ø±ÙˆØ¹" className="top-strip-logo" />
+              ) : (
+                <div className="top-strip-logo placeholder">Ø´Ø¹Ø§Ø± Ø§Ù„Ù…Ø´Ø±ÙˆØ¹</div>
+              )}
+              <img src={PROGRAM_LOGO_URL} alt={APP_NAME} className="top-strip-logo program" />
+            </div>
+            <div className="top-strip-copy">
+              <h2>{data.settings.companyName}</h2>
+              <p>{APP_NAME}</p>
+              <span>{data.settings.projectName}</span>
+            </div>
+          </div>
+          {message ? <div className="notice">{message}</div> : null}
+        </header>
+
+        {view === "settings" ? (
+          <section className="panel">
+            <div className="panel-head">
+                <h3>Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø£ÙˆÙ„ÙŠØ©</h3>
+                <span>Ù‡Ù†Ø§ ÙŠØªÙ… ØªØ¹Ø±ÙŠÙ Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø´Ø±ÙˆØ¹ Ø§Ù„Ø£Ø³Ø§Ø³ÙŠØ© ÙˆÙ…Ø³Ø§Ø±Ø§Øª Ø§Ù„Ø­ÙØ¸ ÙˆØ§Ù„ØªÙØ¹ÙŠÙ„.</span>
+            </div>
+
+            <div className="form-grid three">
+              <label>
+                Ø§Ø³Ù… Ø§Ù„Ø´Ø±ÙƒØ©
+                <input
+                  value={data.settings.companyName}
+                  onChange={(event) => updateSettings("companyName", event.target.value)}
+                />
+              </label>
+              <label>
+                Ø§Ø³Ù… Ø§Ù„Ù…Ø´Ø±ÙˆØ¹
+                <input
+                  value={data.settings.projectName}
+                  onChange={(event) => updateSettings("projectName", event.target.value)}
+                />
+              </label>
+              <label>
+                Ø±Ù…Ø² Ø§Ù„Ù…Ø´Ø±ÙˆØ¹
+                <input
+                  value={data.settings.projectCode}
+                  onChange={(event) => updateSettings("projectCode", event.target.value)}
+                />
+              </label>
+              <label>
+                Ù…Ø³Ø§Ø± Ù‚Ø§Ø¹Ø¯Ø© Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª
+                <div className="inline-field">
+                  <input value={data.settings.databasePath || ""} readOnly />
+                  <button type="button" className="ghost small" onClick={pickDatabasePath}>
+                    Ø§Ø®ØªÙŠØ§Ø±
+                  </button>
+                </div>
+              </label>
+              <label>
+                Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù…Ù„ÙØ§Øª
+                <div className="inline-field">
+                  <input
+                    value={data.settings.filesPath}
+                    onChange={(event) => updateSettings("filesPath", event.target.value)}
+                  />
+                  <button type="button" className="ghost small" onClick={pickFilesPath}>
+                    Ø§Ø®ØªÙŠØ§Ø±
+                  </button>
+                </div>
+              </label>
+              <label>
+                Ù…Ø³Ø§Ø± Ø­ÙØ¸ Ø§Ù„Ù†Ø³Ø® Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©
+                <div className="inline-field">
+                  <input
+                    value={data.settings.newCopiesPath || ""}
+                    onChange={(event) => updateSettings("newCopiesPath", event.target.value)}
+                  />
+                  <button type="button" className="ghost small" onClick={pickNewCopiesPath}>
+                    Ø§Ø®ØªÙŠØ§Ø±
+                  </button>
+                </div>
+              </label>
+              <label>
+                Ø´Ø¹Ø§Ø± Ø§Ù„Ù…Ø´Ø±ÙˆØ¹
+                <div className="inline-field">
+                  <input value={data.settings.logoPath || ""} readOnly />
+                  <button type="button" className="ghost small" onClick={pickLogo}>
+                    Ø§Ø®ØªÙŠØ§Ø±
+                  </button>
+                </div>
+              </label>
+              <label>
+                Ø·Ø±ÙŠÙ‚Ø© Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„ÙˆØ§Ø¬Ø¨ Ø¯ÙØ¹Ù‡ Ø³Ø§Ø¨Ù‚Ø§Ù‹
+                <select
+                  value={data.settings.previousDueMode}
+                  onChange={(event) => updateSettings("previousDueMode", event.target.value)}
+                >
+                  <option value="auto">ØªÙ„Ù‚Ø§Ø¦ÙŠ Ù…Ù† Ø¢Ø®Ø± Ø°Ø±Ø¹Ø©</option>
+                  <option value="manual">ÙŠØ¯ÙˆÙŠ Ø¯Ø§Ø®Ù„ Ø§Ù„Ø°Ø±Ø¹Ø©</option>
+                </select>
+              </label>
+              <label>
+                ÙƒÙ„Ù…Ø© Ù…Ø±ÙˆØ± Ø§Ù„Ø³ÙˆØ¨Ø± Ø£Ø¯Ù…Ù†
+                <input
+                  type="password"
+                  value={data.settings.superPassword}
+                  onChange={(event) => updateSettings("superPassword", event.target.value)}
+                />
+              </label>
+              <label>
+                Ø§Ù„ÙˆØ­Ø¯Ø§Øª Ø§Ù„Ù…Ø¹ØªÙ…Ø¯Ø©
+                <textarea
+                  rows={4}
+                  value={unitOptions.join("\n")}
+                  onChange={(event) => updateUnitOptions(event.target.value)}
+                  placeholder={"Ù…\nÙ…2\nÙ…3\nØ¹Ø¯Ø¯\nl.m\nÙ‚Ø·Ø¹ÙŠ"}
+                />
+              </label>
+              <label className="checkbox-field">
+                <span>Ø¥Ø¸Ù‡Ø§Ø± Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„ØªØ¹Ø§Ù‚Ø¯ÙŠØ© ÙÙŠ Ø´Ø§Ø´Ø© Ø§Ù„Ø°Ø±Ø¹Ø©</span>
+                <input
+                  type="checkbox"
+                  checked={data.settings.showContractQuantityInMeasurement}
+                  onChange={(event) =>
+                    updateSettings("showContractQuantityInMeasurement", event.target.checked)
+                  }
+                />
+              </label>
+              <label className="checkbox-field">
+                <span>إظهار عمود الكمية المتبقية</span>
+                <input
+                  type="checkbox"
+                  checked={data.settings.showRemainingQtyInMeasurement}
+                  onChange={(event) =>
+                    updateSettings("showRemainingQtyInMeasurement", event.target.checked)
+                  }
+                />
+              </label>
+            </div>
+
+            <div className="panel-head secondary">
+                <h4>Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø£ÙˆÙÙ„Ø§ÙŠÙ†</h4>
+              <span>
+                {licenseInfo
+                  ? `Ø§Ù„Ø­Ø§Ù„Ø©: ${licenseInfo.status} / Ø§Ù„Ø®Ø·Ø©: ${licenseInfo.plan || "-"}`
+                  : "Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø¹Ù„ÙˆÙ…Ø§Øª ØªÙØ¹ÙŠÙ„ Ø­ØªÙ‰ Ø§Ù„Ø¢Ù†."}
+              </span>
+            </div>
+
+            <div className="form-grid three">
+              <label>
+                Ø¨ØµÙ…Ø© Ø§Ù„Ø¬Ù‡Ø§Ø²
+                <input value={licenseInfo?.deviceFingerprint || ""} readOnly />
+              </label>
+              <label>
+                ÙƒÙˆØ¯ Ø§Ù„ØªÙØ¹ÙŠÙ„
+                <input
+                  value={licenseKeyInput}
+                  onChange={(event) => setLicenseKeyInput(event.target.value)}
+                  placeholder="Ø£Ù„ØµÙ‚ ÙƒÙˆØ¯ Ø§Ù„ØªÙØ¹ÙŠÙ„ Ù‡Ù†Ø§"
+                />
+              </label>
+              <label>
+                ØªÙØ¹ÙŠÙ„ Ø£ÙˆÙÙ„Ø§ÙŠÙ†
+                <button type="button" className="primary" onClick={activateOfflineLicense}>
+                  ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø±Ø®ØµØ©
+                </button>
+              </label>
+            </div>
+          </section>
+        ) : null}
+
+        {view === "contractors" ? (
+          <div className="two-column">
+            <section className="panel">
+              <div className="panel-head">
+                <h3>Ù‚Ø§Ø¦Ù…Ø© Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ÙŠÙ†</h3>
+                <button type="button" className="ghost" onClick={newContractor}>
+                  Ù…ØªØ¹Ù‡Ø¯ Ø¬Ø¯ÙŠØ¯
+                </button>
+              </div>
+
+              <div className="list-stack names-only-list">
+                {data.contractors.map((contractor) => (
+                  <button
+                    type="button"
+                    key={contractor.id}
+                    className={
+                      contractor.id === selectedContractorId ? "list-card active" : "list-card"
+                    }
+                    onClick={() => {
+                      setSelectedContractorId(contractor.id);
+                      setSelectedMeasurementId("draft");
+                    }}
+                  >
+                    <strong>{contractor.name}</strong>
+                    <span>{contractor.contractNumber} / {contractor.workNumber}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-head">
+                <h3>Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ ÙˆØ§Ù„Ø¹Ù‚Ø¯</h3>
+                <button type="button" className="primary" onClick={saveContractor}>
+                  Ø­ÙØ¸ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª
+                </button>
+              </div>
+
+              <div className="form-grid three">
+                <label>
+                  Ø§Ø³Ù… Ø§Ù„Ù…ØªØ¹Ù‡Ø¯
+                  <input
+                    value={contractorForm.name}
+                    onChange={(event) => updateContractor("name", event.target.value)}
+                  />
+                </label>
+                <label>
+                  Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯
+                  <input
+                    value={contractorForm.contractNumber}
+                    onChange={(event) =>
+                      updateContractor("contractNumber", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„
+                  <input
+                    value={contractorForm.workNumber}
+                    onChange={(event) => updateContractor("workNumber", event.target.value)}
+                  />
+                </label>
+                <label>
+                  Ø§Ù„Ø¹Ù…Ù„
+                  <input
+                    value={contractorForm.workName}
+                    onChange={(event) => updateContractor("workName", event.target.value)}
+                  />
+                </label>
+                <label>
+                  ØªØ£Ù…ÙŠÙ†Ø§Øª Ø§Ù„Ø¹Ù‚Ø¯ %
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="number-input"
+                    value={formatEditableNumber(contractorForm.retentionPercent)}
+                    onChange={(event) =>
+                      updateContractor("retentionPercent", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Ø¹Ù‚Ø¯ PDF Ø§Ø®ØªÙŠØ§Ø±ÙŠ
+                  <div className="inline-field">
+                    <input value={contractorForm.contractPdfPath} readOnly />
+                    <div className="stack-inline">
+                      <button type="button" className="ghost small" onClick={pickContractPdf}>
+                        Ø§Ø®ØªÙŠØ§Ø±
+                      </button>
+                      <button
+                        className="ghost small"
+                        type="button"
+                        onClick={() => openLinkedFile(contractorForm.contractPdfPath)}
+                      >
+                        ÙØªØ­
+                      </button>
+                    </div>
+                  </div>
+                </label>
+                <label className="checkbox-field">
+                  <span>Ø§Ø­ØªØ³Ø§Ø¨ Ø§Ù„ØªØ£Ù…ÙŠÙ†Ø§Øª Ù„ÙƒÙ„ ÙÙ‚Ø±Ø©</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(contractorForm.useItemRetention)}
+                    onChange={(event) =>
+                      updateContractor("useItemRetention", event.target.checked)
+                    }
+                  />
+                </label>
+                <label className="checkbox-field">
+                  <span>Ø¥Ø¸Ù‡Ø§Ø± Ù†Ø³Ø¨Ø© Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² ÙÙŠ Ø§Ù„Ø°Ø±Ø¹Ø©</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(contractorForm.showProgressPercent)}
+                    onChange={(event) =>
+                      updateContractor("showProgressPercent", event.target.checked)
+                    }
+                  />
+                </label>
+              </div>
+
+              <div className="panel-head secondary">
+                <h4>Ø§Ù„Ø¹Ù‚Ø¯ ÙˆÙ…Ù„Ø­Ù‚Ø§ØªÙ‡</h4>
+                <button type="button" className="ghost" onClick={addContractAddendum}>
+                  + Ø¥Ø¶Ø§ÙØ© Ù…Ù„Ø­Ù‚ Ø¹Ù‚Ø¯
+                </button>
+              </div>
+
+              <div className="form-grid two">
+                {(contractorForm.contractAddendums || []).map((addendum, index) => (
+                  <label key={addendum.id}>
+                    {`Ù…Ù„Ø­Ù‚ Ø¹Ù‚Ø¯ (Ø§Ø®ØªÙŠØ§Ø±ÙŠ) ${index + 1}`}
+                    <div className="inline-field">
+                      <input value={addendum.path} readOnly />
+                      <div className="stack-inline">
+                        <button
+                          type="button"
+                          className="ghost small"
+                          onClick={() => pickContractAddendum(addendum.id, index)}
+                        >
+                          Ø§Ø®ØªÙŠØ§Ø±
+                        </button>
+                        <button
+                          className="ghost small"
+                          type="button"
+                          onClick={() => openLinkedFile(addendum.path)}
+                        >
+                          ÙØªØ­
+                        </button>
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              <div className="panel-head secondary">
+                <h4>ÙÙ‚Ø±Ø§Øª Ø§Ù„Ø¹Ù…Ù„</h4>
+                <button type="button" className="ghost" onClick={addContractItem}>
+                  Ø¥Ø¶Ø§ÙØ© ÙÙ‚Ø±Ø©
+                </button>
+              </div>
+
+              <div className="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Ø§Ù„ÙÙ‚Ø±Ø©</th>
+                      <th>Ø§Ù„ÙˆØ­Ø¯Ø©</th>
+                      <th>Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„Ø¹Ù‚Ø¯ÙŠØ©</th>
+                      <th>Ø³Ø¹Ø± Ø§Ù„ÙÙ‚Ø±Ø©</th>
+                      {contractorForm.useItemRetention ? <th>ØªØ£Ù…ÙŠÙ†Ø§Øª Ø§Ù„ÙÙ‚Ø±Ø© %</th> : null}
+                      {contractorForm.showProgressPercent ? <th>Ù†Ø³Ø¨Ø© Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² %</th> : null}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contractorForm.items.map((item) => (
+                      <tr key={item.id}>
+                        <td>
+                          <textarea
+                            rows={textareaRows(item.title, 32)}
+                            className="auto-textarea"
+                            value={item.title}
+                            onChange={(event) =>
+                              updateItem(item.id, "title", event.target.value)
+                            }
+                            onInput={(event) => {
+                              event.target.style.height = "auto";
+                              event.target.style.height = `${event.target.scrollHeight}px`;
+                            }}
+                          />
+                        </td>
+                        <td>
+                          <select
+                            value={item.unit}
+                            onChange={(event) =>
+                              updateItem(item.id, "unit", event.target.value)
+                            }
+                          >
+                            {unitOptions.map((unit) => (
+                              <option key={unit} value={unit}>
+                                {unit}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            className="number-input"
+                            value={formatEditableNumber(item.contractQuantity, { blankZero: true })}
+                            onChange={(event) =>
+                              updateItem(item.id, "contractQuantity", event.target.value)
+                            }
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            className="number-input"
+                            value={formatEditableNumber(item.unitPrice)}
+                            onChange={(event) =>
+                              updateItem(item.id, "unitPrice", event.target.value)
+                            }
+                          />
+                        </td>
+                        {contractorForm.useItemRetention ? (
+                          <td>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              className="number-input"
+                              value={formatEditableNumber(item.retentionPercent || 0)}
+                              onChange={(event) =>
+                                updateItem(item.id, "retentionPercent", event.target.value)
+                              }
+                            />
+                          </td>
+                        ) : null}
+                        {contractorForm.showProgressPercent ? (
+                          <td>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              className="number-input"
+                              value={formatEditableNumber(item.progressPercent || 0)}
+                              onChange={(event) =>
+                                updateItem(item.id, "progressPercent", event.target.value)
+                              }
+                            />
+                          </td>
+                        ) : null}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {view === "archive" ? (
+          <section className="panel archive-panel">
+            <div className="panel-head">
+              <div>
+                  <h3>Ø£Ø±Ø´ÙŠÙ Ø§Ù„Ø°Ø±Ø¹Ø§Øª</h3>
+                  <span>Ù‚Ø§Ø¦Ù…Ø© Ù…ÙˆØ­Ø¯Ø© Ù„Ù„Ø°Ø±Ø¹Ø§Øª Ø§Ù„ØµØ§Ø¯Ø±Ø© ÙˆØ§Ù„Ù…ØºÙ„Ù‚Ø© Ù…Ø¹ Ø§Ù„Ø¨Ø­Ø« Ø§Ù„Ø³Ø±ÙŠØ¹ ÙˆÙØªØ­ Ø§Ù„Ù…Ù„ÙØ§Øª.</span>
+              </div>
+              <button
+                className="ghost"
+                type="button"
+                onClick={() => {
+                  if (selectedArchiveMeasurement) {
+                    openMeasurementRecord(
+                      selectedArchiveMeasurement.id,
+                      selectedArchiveMeasurement.contractorId
+                    );
+                  }
+                }}
+              >
+                ÙØªØ­ Ø§Ù„Ø°Ø±Ø¹Ø© ÙÙŠ Ø´Ø§Ø´Ø© Ø§Ù„Ø°Ø±Ø¹Ø§Øª
+              </button>
+            </div>
+
+            <div className="form-grid archive-search-grid">
+              <label>
+                  Ø§Ø¨Ø­Ø« ÙÙŠ Ø§Ù„Ø£Ø±Ø´ÙŠÙ
+                <input
+                    placeholder="Ø§Ø¨Ø­Ø« Ø¨Ø§Ù„Ø§Ø³Ù… Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯ Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø°Ø±Ø¹Ø©"
+                  value={archiveSearch}
+                  onChange={(event) => setArchiveSearch(event.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="archive-table-wrap excel-like">
+              <table className="archive-table excel-like">
+                <thead>
+                  <tr>
+                    <th>Ø§Ø³Ù… Ø§Ù„Ù…ØªØ¹Ù‡Ø¯</th>
+                    <th>Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯</th>
+                    <th>Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„</th>
+                    <th>Ø±Ù‚Ù… Ø§Ù„Ø°Ø±Ø¹Ø©</th>
+                    <th>Ø§Ù„Ù†ÙˆØ¹</th>
+                    <th>Ø§Ù„Ø­Ø§Ù„Ø©</th>
+                    <th>Ø§Ù„ØªØ§Ø±ÙŠØ®</th>
+                    <th>Ø§Ù„Ù…Ø¨Ù„Øº</th>
+                    <th>Ø§Ù„ØªÙˆÙ‚ÙŠØ¹</th>
+                    <th>PDF</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {globalArchiveResults.map(({ measurement, contractor }) => (
+                    <tr
+                      key={measurement.id}
+                      className={
+                        selectedMeasurementId === measurement.id ? "archive-row active" : "archive-row"
+                      }
+                      onClick={() => {
+                        setSelectedArchiveContractorId(contractor.id);
+                        setSelectedContractorId(contractor.id);
+                        setSelectedMeasurementId(measurement.id);
+                      }}
+                    >
+                      <td>
+                        <button
+                          type="button"
+                          className="archive-name-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedArchiveContractorId(contractor.id);
+                            openMeasurementRecord(measurement.id, contractor.id);
+                          }}
+                        >
+                          {contractor.name}
+                        </button>
+                      </td>
+                      <td>{contractor.contractNumber}</td>
+                      <td>{contractor.workNumber}</td>
+                      <td>{measurement.issueNo}</td>
+                      <td>{measurementTypeLabel(measurement.type)}</td>
+                      <td>{measurementStatusLabel(measurement)}</td>
+                      <td>{measurement.date || "-"}</td>
+                      <td>{money(measurement.payableThisMeasurement || 0)}</td>
+                      <td>{signatureStatusLabel(measurement)}</td>
+                      <td>
+                        <div className="archive-file-actions">
+                          {measurement.pdfPath ? (
+                            <button
+                              type="button"
+                              className="archive-file-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openLinkedFile(measurement.pdfPath);
+                              }}
+                            >
+                                ÙØªØ­ Ø§Ù„Ù…ØµØ¯Ø±
+                            </button>
+                          ) : (
+                            <span>ØºÙŠØ± Ù…ØµØ¯Ø±</span>
+                          )}
+                          {measurement.signedPdfPath ? (
+                            <button
+                              type="button"
+                              className="archive-file-button secondary"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openLinkedFile(measurement.signedPdfPath);
+                              }}
+                            >
+                                ÙØªØ­ Ø§Ù„Ù…Ø±ÙÙ‚
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {globalArchiveResults.length === 0 ? (
+              <div className="empty-note">Ù„Ø§ ØªÙˆØ¬Ø¯ Ù†ØªØ§Ø¦Ø¬ Ø£Ø±Ø´ÙŠÙ Ù…Ø·Ø§Ø¨Ù‚Ø© Ù„Ø¨Ø­Ø«Ùƒ Ø§Ù„Ø­Ø§Ù„ÙŠ.</div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {view === "measurements" ? (
+          <div className="measurement-layout">
+            <section className="panel contractor-picker-panel">
+              <div className="panel-head">
+                <div>
+                  <h3>Ø§Ø®ØªÙŠØ§Ø± Ø§Ù„Ù…ØªØ¹Ù‡Ø¯</h3>
+                  <span>Ø§Ø¨Ø­Ø« Ø¨Ø§Ø³Ù… Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯ Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„ Ø«Ù… Ø§Ø®ØªØ± Ø§Ù„ØµÙ Ø§Ù„Ù…Ø·Ù„ÙˆØ¨.</span>
+                </div>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={() =>
+                    startNewMeasurement(selectedContractorId || filteredMeasurementContractors[0]?.id)
+                  }
+                  disabled={!selectedContractorId && filteredMeasurementContractors.length === 0}
+                >
+                  Ø¥ØµØ¯Ø§Ø± Ø³Ù„ÙØ© Ø¬Ø¯ÙŠØ¯Ø©
+                </button>
+              </div>
+
+              <div className="contractor-search-grid">
+                <label>
+                  Ø§Ø¨Ø­Ø« Ø¹Ù† Ø§Ù„Ù…ØªØ¹Ù‡Ø¯
+                  <input
+                    value={measurementSearch}
+                    onChange={(event) => setMeasurementSearch(event.target.value)}
+                    placeholder="Ø§Ù„Ø§Ø³Ù… Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯ Ø£Ùˆ Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„"
+                  />
+                </label>
+              </div>
+
+              <div className="contractor-picker-table-wrap">
+                <table className="contractor-picker-table">
+                  <thead>
+                    <tr>
+                      <th>Ø§Ø³Ù… Ø§Ù„Ù…ØªØ¹Ù‡Ø¯</th>
+                      <th>Ø±Ù‚Ù… Ø§Ù„Ø¹Ù‚Ø¯</th>
+                      <th>Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„</th>
+                      <th>Ø§Ù„Ø¹Ù…Ù„</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredMeasurementContractors.map((contractor) => (
+                      <tr
+                        key={contractor.id}
+                        className={
+                          contractor.id === selectedContractorId
+                            ? "contractor-picker-row active"
+                            : "contractor-picker-row"
+                        }
+                        onClick={() => startNewMeasurement(contractor.id)}
+                      >
+                        <td className="wrap-cell">{contractor.name}</td>
+                        <td>{contractor.contractNumber}</td>
+                        <td>{contractor.workNumber}</td>
+                        <td className="wrap-cell">{contractor.workName}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {filteredMeasurementContractors.length === 0 ? (
+                <div className="empty-note">Ù„Ø§ ØªÙˆØ¬Ø¯ Ù†ØªØ§Ø¦Ø¬ Ù…Ø·Ø§Ø¨Ù‚Ø© Ù„Ø¨Ø­Ø« Ø§Ù„Ù…ØªØ¹Ù‡Ø¯ Ø§Ù„Ø­Ø§Ù„ÙŠ.</div>
+              ) : null}
+            </section>
+
+            {selectedContractor ? (
+              <section className="panel measurement-editor-panel">
+                <div className="measurement-editor-head">
+                  <div>
+                    <h3>Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ø°Ø±Ø¹Ø©</h3>
+                    <div className="selected-contractor-strip">
+                      <strong>{selectedContractor.name}</strong>
+                      <span>{selectedContractor.contractNumber}</span>
+                      <span>{selectedContractor.workNumber}</span>
+                    </div>
+                  </div>
+                  <div className="action-line">
+                    {measurementForm?.status === "issued" && !measurementEditable ? (
+                      <>
+                        <button className="ghost" type="button" onClick={enableMeasurementEditing}>
+                          ØªØ¹Ø¯ÙŠÙ„ Ø§Ù„Ø°Ø±Ø¹Ø©
+                        </button>
+                        <button
+                          className="ghost"
+                          type="button"
+                          onClick={() => deleteIssuedMeasurement(measurementForm.id)}
+                        >
+                          Ø­Ø°Ù Ø§Ù„Ø°Ø±Ø¹Ø©
+                        </button>
+                        <button className="ghost" type="button" onClick={closeMeasurement}>
+                          Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø°Ø±Ø¹Ø©
+                        </button>
+                      </>
+                    ) : null}
+                    {measurementForm?.status !== "closed" && measurementEditable ? (
+                      <button className="primary" type="button" onClick={() => saveMeasurement("issued")}>
+                        Ø¥ØµØ¯Ø§Ø± ÙˆØ£Ø±Ø´ÙØ©
+                      </button>
+                    ) : null}
+                    {measurementForm?.status !== "closed" && measurementEditable ? (
+                      <button className="ghost" type="button" onClick={closeMeasurement}>
+                        Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø°Ø±Ø¹Ø©
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                {measurementReady ? (
+                  <>
+                    <div className="summary-grid archive-summary measurement-summary-grid">
+                      <div className="summary-box">
+                        <span>Ù†ÙˆØ¹ Ø§Ù„Ø°Ø±Ø¹Ø©</span>
+                        <strong>{measurementTypeLabel(measurementForm.type)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>Ø§Ù„Ø­Ø§Ù„Ø©</span>
+                        <strong>{measurementStatusLabel(measurementForm)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>Ø­Ø§Ù„Ø© Ø§Ù„ØªÙˆÙ‚ÙŠØ¹</span>
+                        <strong>{signatureStatusLabel(measurementForm)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>ØªØ§Ø±ÙŠØ® Ø§Ù„Ø¥ØµØ¯Ø§Ø±</span>
+                        <strong>{measurementForm.date || "-"}</strong>
+                      </div>
+                      <div className="summary-box highlight">
+                        <span>Ù…Ø¨Ù„Øº Ø§Ù„Ø°Ø±Ø¹Ø©</span>
+                        <strong>{money(currentSummary.payableThisMeasurement)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="form-grid three measurement-header-grid">
+                      <label>
+                        Ø±Ù‚Ù… Ø§Ù„Ø°Ø±Ø¹Ø©
+                        <input
+                          value={measurementForm.issueNo}
+                          disabled={isLockedMeasurement()}
+                          onChange={(event) => updateMeasurement("issueNo", event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Ø§Ù„ØªØ§Ø±ÙŠØ®
+                        <input
+                          type="date"
+                          value={measurementForm.date}
+                          disabled={isLockedMeasurement()}
+                          onChange={(event) => updateMeasurement("date", event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        Ø§Ù„Ù†ÙˆØ¹
+                        <select
+                          value={measurementForm.type}
+                          disabled={isLockedMeasurement()}
+                          onChange={(event) => updateMeasurement("type", event.target.value)}
+                        >
+                          <option value="regular">Ø°Ø±Ø¹Ø© Ø§Ø¹ØªÙŠØ§Ø¯ÙŠØ©</option>
+                          <option value="clearance">Ø°Ø±Ø¹Ø© ØªØµÙÙŠØ©</option>
+                        </select>
+                      </label>
+                      <label>
+                        Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„ÙˆØ§Ø¬Ø¨ Ø¯ÙØ¹Ù‡ Ø³Ø§Ø¨Ù‚Ø§Ù‹
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          className="number-input"
+                          value={formatEditableNumber(measurementForm.previousDueManual || 0)}
+                          disabled={
+                            isLockedMeasurement() || data.settings.previousDueMode === "auto"
+                          }
+                          onChange={(event) =>
+                            updateMeasurement("previousDueManual", event.target.value)
+                          }
+                        />
+                      </label>
+                      <label>
+                        Ø­Ø§Ù„Ø© Ø§Ù„Ø°Ø±Ø¹Ø©
+                        <input value={measurementStatusLabel(measurementForm)} readOnly />
+                      </label>
+                      <label>
+                        Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù…
+                        <select
+                          value={measurementForm.handoverIssued ? "yes" : "no"}
+                          disabled={isLockedMeasurement()}
+                          onChange={(event) =>
+                            updateMeasurement("handoverIssued", event.target.value === "yes")
+                          }
+                        >
+                          <option value="no">ØºÙŠØ± ØµØ§Ø¯Ø±</option>
+                          <option value="yes">ØµØ§Ø¯Ø±</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="form-grid measurement-notes-grid">
+                      <label>
+                        Ù…Ù„Ø§Ø­Ø¸Ø§Øª Ø¹Ø§Ù…Ø© Ù„Ù„Ø°Ø±Ø¹Ø©
+                        <textarea
+                          rows={textareaRows(measurementForm.generalNotes, 90)}
+                          className="auto-textarea"
+                          value={measurementForm.generalNotes || ""}
+                          disabled={isLockedMeasurement()}
+                          onChange={(event) =>
+                            updateMeasurement("generalNotes", event.target.value)
+                          }
+                          onInput={(event) => {
+                            event.target.style.height = "auto";
+                            event.target.style.height = `${event.target.scrollHeight}px`;
+                          }}
+                        />
+                      </label>
+                    </div>
+
+                    {measurementForm.type === "clearance" ? (
+                      <>
+                        <div className="warning-box">
+                          Ø°Ø±Ø¹Ø© Ø§Ù„ØªØµÙÙŠØ© ØªÙƒÙˆÙ† Ø¨Ø¯ÙˆÙ† ØªØ£Ù…ÙŠÙ†Ø§ØªØŒ ÙˆÙŠØ¬Ø¨ Ø¥ØµØ¯Ø§Ø± Ù…Ø­Ø¶Ø± Ø§Ø³ØªÙ„Ø§Ù… ÙˆØ¥Ø±ÙØ§Ù‚Ù‡ Ù‚Ø¨Ù„ Ø§Ù„Ø§Ø¹ØªÙ…Ø§Ø¯. ÙˆÙ„Ø§ ÙŠÙ…ÙƒÙ† Ø¥ØµØ¯Ø§Ø± Ø°Ø±Ø¹Ø© Ø¬Ø¯ÙŠØ¯Ø© Ø¨Ø¹Ø¯ Ø§Ù„ØªØµÙÙŠØ©.
+                        </div>
+                        <div className="form-grid two">
+                          <label>
+                            Ù…Ù„Ù Ù…Ø­Ø¶Ø± Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù…
+                            <div className="inline-field">
+                              <input value={measurementForm.handoverPdfPath || ""} readOnly />
+                              <div className="stack-inline">
+                                <button className="ghost small" type="button" onClick={attachHandoverPdf}>
+                                  Ø¥Ø±ÙØ§Ù‚ Ø§Ù„Ù…Ø­Ø¶Ø±
+                                </button>
+                                <button
+                                  className="ghost small"
+                                  type="button"
+                                  onClick={() => openLinkedFile(measurementForm.handoverPdfPath)}
+                                >
+                                  ÙØªØ­
+                                </button>
+                              </div>
+                            </div>
+                          </label>
+                        </div>
+                      </>
+                    ) : null}
+
+                    <div className="panel-head secondary">
+                      <h4>ØªÙØ§ØµÙŠÙ„ Ø§Ù„ÙÙ‚Ø±Ø§Øª</h4>
+                      <button
+                        className="ghost"
+                        type="button"
+                        disabled={isLockedMeasurement()}
+                        onClick={addMeasurementRowFromContract}
+                      >
+                          Ø¥Ø¶Ø§ÙØ© ÙÙ‚Ø±Ø©
+                      </button>
+                    </div>
+
+                    <div className="table-scroll measurement-table-wrap">
+                      <table className="measurement-table">
+                        <thead>
+                          <tr>
+                            <th>Ø§Ù„ÙÙ‚Ø±Ø©</th>
+                            <th>Ø§Ù„ÙˆØ­Ø¯Ø©</th>
+                            <th>Ø³Ø¹Ø± Ø§Ù„ÙÙ‚Ø±Ø©</th>
+                            {data.settings.showContractQuantityInMeasurement ? (
+                              <th>Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„Ø¹Ù‚Ø¯ÙŠØ©</th>
+                            ) : null}
+                            {selectedContractor.useItemRetention ? <th>ØªØ£Ù…ÙŠÙ†Ø§Øª Ø§Ù„ÙÙ‚Ø±Ø© %</th> : null}
+                            <th>Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„Ø³Ø§Ø¨Ù‚Ø©</th>
+                            <th>Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² Ø§Ù„Ø­Ø§Ù„ÙŠ</th>
+                            {selectedContractor.showProgressPercent ? <th>Ù†Ø³Ø¨Ø© Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² %</th> : null}
+                            <th>Ø§Ù„ØªØ±Ø§ÙƒÙ…ÙŠ Ø§Ù„ÙƒÙ„ÙŠ</th>
+                            {data.settings.showRemainingQtyInMeasurement ? <th>Ø§Ù„Ù…ØªØ¨Ù‚ÙŠ</th> : null}
+                            <th>Ù…Ø¨Ù„Øº Ø§Ù„Ø³Ø§Ø¨Ù‚</th>
+                            <th>Ù…Ø¨Ù„Øº Ø§Ù„Ø­Ø§Ù„ÙŠ</th>
+                            <th>Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„ÙƒÙ„ÙŠ</th>
+                            <th>Ø§Ù„Ù…Ù„Ø§Ø­Ø¸Ø§Øª</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentSummary.rows.map((row) => (
+                            <tr key={row.id}>
+                              <td className="wrap-cell">
+                                {row.itemId && !row.isCustom ? (
+                                  <textarea
+                                    rows={textareaRows(row.title, 28)}
+                                    className="auto-textarea"
+                                    value={row.title}
+                                    readOnly
+                                  />
+                                ) : (
+                                  <div className="custom-item-cell">
+                                    <select
+                                      disabled={isLockedMeasurement()}
+                                      value={row.itemId}
+                                      onChange={(event) =>
+                                        chooseContractItemForRow(row.id, event.target.value)
+                                      }
+                                    >
+                                      <option value="">Ø§Ø®ØªØ± ÙÙ‚Ø±Ø© Ù…Ù† Ø§Ù„Ù‚Ø§Ø¦Ù…Ø©</option>
+                                      {selectedContractor.items.map((item) => (
+                                        <option key={item.id} value={item.id}>
+                                          {item.title}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <textarea
+                                      rows={textareaRows(row.title, 28)}
+                                      className="auto-textarea"
+                                      placeholder="Ø£Ùˆ Ø§ÙƒØªØ¨ ÙÙ‚Ø±Ø© Ø¬Ø¯ÙŠØ¯Ø©"
+                                      value={row.title}
+                                      disabled={isLockedMeasurement()}
+                                      onChange={(event) =>
+                                        updateMeasurementRow(row.id, "title", event.target.value)
+                                      }
+                                      onInput={(event) => {
+                                        event.target.style.height = "auto";
+                                        event.target.style.height = `${event.target.scrollHeight}px`;
+                                      }}
+                                    />
+                                  </div>
+                                )}
+                              </td>
+                              <td>
+                                <select
+                                  value={row.unit}
+                                  disabled={isLockedMeasurement() || !row.isCustom}
+                                  onChange={(event) =>
+                                    updateMeasurementRow(row.id, "unit", event.target.value)
+                                  }
+                                >
+                                  {unitOptions.map((unit) => (
+                                    <option key={unit} value={unit}>
+                                      {unit}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  className="number-input"
+                                  value={formatEditableNumber(row.unitPrice)}
+                                  readOnly={!row.isCustom}
+                                  disabled={isLockedMeasurement()}
+                                  onChange={(event) =>
+                                    updateMeasurementRow(row.id, "unitPrice", event.target.value)
+                                  }
+                                />
+                              </td>
+                              {data.settings.showContractQuantityInMeasurement ? (
+                                <td>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    className="number-input"
+                                    value={formatEditableNumber(row.contractQuantity, { blankZero: true })}
+                                    readOnly={!row.isCustom}
+                                    disabled={isLockedMeasurement()}
+                                    onChange={(event) =>
+                                      updateMeasurementRow(row.id, "contractQuantity", event.target.value)
+                                    }
+                                  />
+                                </td>
+                              ) : null}
+                              {selectedContractor.useItemRetention ? (
+                                <td>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    className="number-input"
+                                    value={formatEditableNumber(row.retentionPercent || 0)}
+                                    readOnly={!row.isCustom}
+                                    disabled={isLockedMeasurement()}
+                                    onChange={(event) =>
+                                      updateMeasurementRow(row.id, "retentionPercent", event.target.value)
+                                    }
+                                  />
+                                </td>
+                              ) : null}
+                              <td><input className="number-input" value={formatEditableNumber(row.previousQty)} readOnly /></td>
+                              <td>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  className="number-input"
+                                  value={formatEditableNumber(row.currentQty)}
+                                  disabled={isLockedMeasurement()}
+                                  onChange={(event) =>
+                                    updateMeasurementRow(row.id, "currentQty", event.target.value)
+                                  }
+                                />
+                              </td>
+                              {selectedContractor.showProgressPercent ? (
+                                <td>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    className="number-input"
+                                    value={formatEditableNumber(row.progressPercent || 0)}
+                                    disabled={isLockedMeasurement()}
+                                    onChange={(event) =>
+                                      updateMeasurementRow(row.id, "progressPercent", event.target.value)
+                                    }
+                                  />
+                                </td>
+                              ) : null}
+                              <td><input className="number-input" value={formatEditableNumber(row.totalQty)} readOnly /></td>
+                              {data.settings.showRemainingQtyInMeasurement ? (
+                                <td><input className="number-input" value={formatEditableNumber(row.remainingQty)} readOnly /></td>
+                              ) : null}
+                              <td><input className="number-input" value={money(row.previousAmount)} readOnly /></td>
+                              <td><input className="number-input" value={money(row.currentAmount)} readOnly /></td>
+                              <td><input className="number-input" value={money(row.totalAmount)} readOnly /></td>
+                              <td className="wrap-cell">
+                                <textarea
+                                  rows={textareaRows(row.notes, 18)}
+                                  className="auto-textarea"
+                                  value={row.notes}
+                                  disabled={isLockedMeasurement()}
+                                  onChange={(event) =>
+                                    updateMeasurementRow(row.id, "notes", event.target.value)
+                                  }
+                                  onInput={(event) => {
+                                    event.target.style.height = "auto";
+                                    event.target.style.height = `${event.target.scrollHeight}px`;
+                                  }}
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="summary-grid measurement-summary-grid">
+                      <div className="summary-box">
+                        <span>Ù…Ø¨Ù„Øº Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² Ø§Ù„ØªØ±Ø§ÙƒÙ…ÙŠ Ø§Ù„ÙƒÙ„ÙŠ</span>
+                        <strong>{money(currentSummary.totalDue)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„ÙˆØ§Ø¬Ø¨ Ø¯ÙØ¹Ù‡ Ø³Ø§Ø¨Ù‚Ø§Ù‹</span>
+                        <strong>{money(currentSummary.previousDue)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>Ù…Ø¨Ù„Øº Ø§Ù„Ø¥Ù†Ø¬Ø§Ø² Ø§Ù„Ø­Ø§Ù„ÙŠ</span>
+                        <strong>{money(currentSummary.currentAmount)}</strong>
+                      </div>
+                      <div className="summary-box">
+                        <span>Ù…Ø¨Ù„Øº Ø§Ù„ØªØ£Ù…ÙŠÙ†Ø§Øª</span>
+                        <strong>{money(currentSummary.retentionAmount)}</strong>
+                      </div>
+                      <div className="summary-box highlight">
+                        <span>Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„ÙˆØ§Ø¬Ø¨ Ø¯ÙØ¹Ù‡ Ù„Ù‡Ø°Ù‡ Ø§Ù„Ø°Ø±Ø¹Ø©</span>
+                        <strong>{money(currentSummary.payableThisMeasurement)}</strong>
+                      </div>
+                    </div>
+
+                    <div className="panel-head secondary">
+                      <h4>Ø§Ù„Ø·Ø¨Ø§Ø¹Ø© ÙˆØ§Ù„Ø£Ø±Ø´ÙØ©</h4>
+                    </div>
+
+                    <div className="form-grid two">
+                      <label>
+                        Ù…Ù„Ù PDF Ø§Ù„Ù…ØµØ¯Ø±
+                        <div className="inline-field">
+                          <input value={measurementForm.pdfPath || ""} readOnly />
+                          <div className="stack-inline">
+                            <button className="ghost small" type="button" onClick={exportMeasurementPdf}>
+                              ØªØµØ¯ÙŠØ± PDF
+                            </button>
+                            <button
+                              className="ghost small"
+                              type="button"
+                              onClick={() => openLinkedFile(measurementForm.pdfPath)}
+                            >
+                              ÙØªØ­
+                            </button>
+                          </div>
+                        </div>
+                      </label>
+                      <label>
+                        Ø§Ù„Ù†Ø³Ø®Ø© Ø§Ù„Ù…ÙˆÙ‚Ø¹Ø© PDF
+                        <div className="inline-field">
+                          <input value={measurementForm.signedPdfPath || ""} readOnly />
+                          <div className="stack-inline">
+                            <button className="ghost small" type="button" onClick={attachSignedPdf}>
+                              Ø¥Ø±ÙØ§Ù‚
+                            </button>
+                            <button
+                              className="ghost small"
+                              type="button"
+                              onClick={() => openLinkedFile(measurementForm.signedPdfPath)}
+                            >
+                              ÙØªØ­
+                            </button>
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+
+                    <div className="panel-head secondary">
+                      <h4>Ø³Ø¬Ù„ Ø§Ù„ØªØ¯Ù‚ÙŠÙ‚</h4>
+                    </div>
+                    <div className="list-stack compact">
+                      {(measurementForm.auditLog || []).length === 0 ? (
+                        <div className="empty-note">Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø³Ø¬Ù„ Ø¨Ø¹Ø¯.</div>
+                      ) : (
+                        measurementForm.auditLog
+                          .slice()
+                          .reverse()
+                          .map((entry) => (
+                            <div key={entry.id} className="audit-row">
+                              <strong>{entry.action}</strong>
+                              <span>{entry.at}</span>
+                            </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="panel-head secondary">
+                      <h4>Ø§Ù„Ø°Ø±Ø¹Ø§Øª Ø§Ù„Ø³Ø§Ø¨Ù‚Ø© Ù„Ù‡Ø°Ø§ Ø§Ù„Ù…ØªØ¹Ù‡Ø¯</h4>
+                    </div>
+
+                    <div className="archive-table-wrap measurement-history-wrap">
+                      <table className="archive-table excel-like measurement-history-table">
+                        <thead>
+                          <tr>
+                            <th>Ø±Ù‚Ù… Ø§Ù„Ø°Ø±Ø¹Ø©</th>
+                            <th>Ø±Ù‚Ù… Ø§Ù„Ø¹Ù…Ù„</th>
+                            <th>Ø§Ù„Ø­Ø§Ù„Ø©</th>
+                            <th>Ø§Ù„ØªØ§Ø±ÙŠØ®</th>
+                            <th>Ø§Ù„Ù…Ø¨Ù„Øº</th>
+                            <th>PDF</th>
+                            <th>ÙØªØ­</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {contractorMeasurementHistory.map((item) => (
+                            <tr
+                              key={item.id}
+                              className={
+                                selectedMeasurementId === item.id ? "archive-row active" : "archive-row"
+                              }
+                            >
+                              <td>{item.issueNo}</td>
+                              <td>{selectedContractor.workNumber}</td>
+                              <td>{measurementStatusLabel(item)}</td>
+                              <td>{item.date || "-"}</td>
+                              <td>{money(item.payableThisMeasurement || 0)}</td>
+                              <td>
+                                <div className="archive-file-actions">
+                                  {item.pdfPath ? (
+                                    <button
+                                      type="button"
+                                      className="archive-file-button"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openLinkedFile(item.pdfPath);
+                                      }}
+                                    >
+                                      ÙØªØ­ Ø§Ù„Ù…ØµØ¯Ø±
+                                    </button>
+                                  ) : (
+                                    <span>ØºÙŠØ± Ù…ØµØ¯Ø±</span>
+                                  )}
+                                  {item.signedPdfPath ? (
+                                    <button
+                                      type="button"
+                                      className="archive-file-button secondary"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        openLinkedFile(item.signedPdfPath);
+                                      }}
+                                    >
+                                      ÙØªØ­ Ø§Ù„Ù…Ø±ÙÙ‚
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                              <td>
+                                <div className="archive-file-actions">
+                                  <button
+                                    type="button"
+                                    className="archive-file-button secondary"
+                                    onClick={() => openMeasurementRecord(item.id, selectedContractor.id)}
+                                  >
+                                    Ø¹Ø±Ø¶ Ø§Ù„Ø°Ø±Ø¹Ø©
+                                  </button>
+                                  {item.status === "issued" ? (
+                                    <button
+                                      type="button"
+                                      className="archive-file-button"
+                                      onClick={() => deleteIssuedMeasurement(item.id)}
+                                    >
+                                      Ø­Ø°Ù
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <div className="empty-note">Ø§Ø®ØªØ± Ù…ØªØ¹Ù‡Ø¯Ø§Ù‹ Ù„Ø¹Ø±Ø¶ Ù†Ù…ÙˆØ°Ø¬ Ø§Ù„Ø°Ø±Ø¹Ø© Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©.</div>
+                )}
+              </section>
+            ) : (
+              <section className="panel">
+                <div className="empty-note">
+                  Ø§Ø®ØªØ± Ù…ØªØ¹Ù‡Ø¯Ø§Ù‹ Ù…Ù† Ø§Ù„Ø¬Ø¯ÙˆÙ„ Ø£Ø¹Ù„Ø§Ù‡ Ù„Ø¨Ø¯Ø¡ Ø¥ØµØ¯Ø§Ø± Ø°Ø±Ø¹Ø© Ø¬Ø¯ÙŠØ¯Ø© Ø£Ùˆ Ù…ØªØ§Ø¨Ø¹Ø© Ø°Ø±Ø¹Ø© Ù…ÙˆØ¬ÙˆØ¯Ø©.
+                </div>
+              </section>
+            )}
+          </div>
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+export default App;
+
